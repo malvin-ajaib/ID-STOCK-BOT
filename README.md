@@ -4,6 +4,62 @@ A Python automation bot for the Ajaib stock API over plain HTTP (`requests`).
 It logs in (login → PIN validate), reads the order book, and places/queries/cancels
 orders. Every run logs in fresh — no session is stored on disk.
 
+## ⚡ Command cheat sheet
+
+> First time? Do the [Setup](#setup) once, then `source venv/bin/activate`.
+> `--code` defaults to `AJAIB_STOCK_CODE` in `.env`. Orders are placed for real.
+
+```bash
+# BUY: 1 lot, 5 ticks above best ask (default flow)
+python main.py --code BMRI
+
+# BUY: 2 lots, 3 ticks above best ask
+python main.py --code BMRI --lot 2 --ticks 3
+
+# SELL: 1 lot, 5 ticks below best bid  (uses account 2)
+python main.py --code BMRI --side sell
+
+# SELL: 2 lots, 3 ticks below best bid
+python main.py --code BMRI --side sell --lot 2 --ticks 3
+
+# BUY UNTIL price reached: keep buying at 4000 until best ask hits 4000
+#   (lot omitted -> uses the volume at the best ask each step)
+python main.py --code BMRI --until 4000
+
+# SELL UNTIL price reached: keep selling at 4000 until best bid drops to 4000
+python main.py --code BMRI --side sell --until 4000
+
+# UNTIL with fixed lot + faster polling + higher order cap
+python main.py --code BMRI --until 4000 --lot 5 --interval 0.5 --max-attempts 200
+
+# RANDOM mode: buy (acct 1) + sell (acct 2) random orders in parallel, until Ctrl+C
+python main.py --code BMRI --random
+
+# Force a fresh login (all runs log in fresh anyway)
+python main.py --code BMRI --force-login
+
+# One-off device profile switch (no .env edit)
+AJAIB_DEVICE_PROFILE=IOS python main.py --code BMRI
+
+# Full option list
+python main.py --help
+```
+
+| Flag | Default | Applies to | Meaning |
+|------|---------|-----------|---------|
+| `--code` | `AJAIB_STOCK_CODE` | all | Stock code to trade |
+| `--side` | `buy` | ticks / until | `buy` (acct 1) or `sell` (acct 2) |
+| `--lot` | 1 (ticks) / auto (until) | ticks / until | Lots per order; until auto = best level volume |
+| `--ticks` | 5 | ticks flow | Ticks above ask / below bid |
+| `--until` | — | until flow | Target price; loop until market reaches it |
+| `--interval` | 1.0 | until flow | Seconds between attempts |
+| `--max-attempts` | 100 | until flow | Order cap for the until loop |
+| `--random` | off | random mode | Parallel random buy+sell until Ctrl+C |
+| `--force-login` | off | all | Re-authenticate explicitly |
+
+Functions not on the CLI (`get_all_orders`, `cancel_order`, `cancel_all_orders`,
+`get_portfolio`, …) — see [Use the other actions from Python](#use-the-other-actions-from-python).
+
 ## Features
 
 - Two-step auth: `login` → `pin/validate` → `access_token` (`jwt` scheme)
@@ -89,6 +145,28 @@ In `--until` mode, **`--lot` defaults to the volume sitting at the best ask (buy
 best bid (sell)** each iteration — so one order clears one price level and the book
 walks toward the target. Pass `--lot N` to force a fixed size instead.
 
+### Random mode (buy + sell in parallel)
+
+```bash
+python main.py --code BMRI --random
+```
+
+Runs two threads at once — **buy on account 1, sell on account 2** — each placing
+one random order every few seconds until you Ctrl+C. Each order is a random **±1–5
+ticks** off the best ask (buy) / best bid (sell), with a random **lot in 100–5000**.
+All knobs are env-configurable:
+
+```
+AJAIB_RANDOM_LOT_MIN=100
+AJAIB_RANDOM_LOT_MAX=5000
+AJAIB_RANDOM_TICKS_MIN=1
+AJAIB_RANDOM_TICKS_MAX=5
+AJAIB_RANDOM_INTERVAL_SECONDS=3
+```
+
+Random sells still run the portfolio check + top-up, so the sell account is
+funded automatically.
+
 ### Switch iOS ⇄ Android
 
 Flip one line in `.env`:
@@ -110,6 +188,7 @@ AJAIB_DEVICE_PROFILE=ANDROID python main.py --code BMRI
 Not every function is on the CLI. Call them via `StockBot`:
 
 ```python
+import config
 from src.bot import StockBot
 
 bot = StockBot()
@@ -123,6 +202,12 @@ bot.buy_ticks_above_ask("BMRI", lot=1, ticks=5)   # the main flow
 orders = bot.get_all_orders(status="OPEN")        # paginated list
 bot.cancel_order("BMRI", "TA-01-0617KOM8X")       # cancel one (orderno = vendor_order_id)
 bot.cancel_all_orders()                           # cancel every cancelable open order
+
+bot.get_portfolio("BBCA")                         # raw portfolio detail
+bot.owned_lot("BBCA")                             # lots held (0 if none)
+
+sell_bot = StockBot(account=config.ACCOUNT_SELL)  # act as account 2 explicitly
+sell_bot.boot()
 ```
 
 ## Project layout

@@ -70,6 +70,17 @@ def _portfolio_lot(response: Any) -> int:
     return int(lot) if isinstance(lot, (int, float)) else 0
 
 
+def _random_offset_ticks() -> int:
+    """Random 1-5 (config range) ticks, randomly above (+) or below (-)."""
+    magnitude = random.randint(config.RANDOM_TICKS_MIN, config.RANDOM_TICKS_MAX)
+    return magnitude * random.choice((1, -1))
+
+
+def _random_lot() -> int:
+    """Random lot in the configured [MIN, MAX] range."""
+    return random.randint(config.RANDOM_LOT_MIN, config.RANDOM_LOT_MAX)
+
+
 class StockBot:
     def __init__(self, account: dict | None = None):
         self.account = account if account is not None else config.ACCOUNT_BUY
@@ -360,6 +371,43 @@ class StockBot:
             "reached": reached,
             "orders_placed": len(attempts),
             "attempts": attempts,
+        }
+
+    # -- random single orders (used by --random threads) --------------------
+    def random_buy(self, code: str) -> dict:
+        """One buy at a random ±1-5 ticks off the best ask, random lot."""
+        best_ask = _best_ask_price(self.get_orderbook(code))
+        offset = _random_offset_ticks()
+        price = add_ticks(best_ask, offset)
+        lot = _random_lot()
+        return {
+            "side": "BUY",
+            "code": code,
+            "reference": best_ask,
+            "offset_ticks": offset,
+            "lot": lot,
+            "price": price,
+            "response": self.buy(code, lot=lot, price=price),
+        }
+
+    def random_sell(self, code: str) -> dict:
+        """One sell at a random ±1-5 ticks off the best bid, random lot.
+
+        Tops up the holding first if short (same guard as the other sell flows).
+        """
+        best_bid = _best_bid_price(self.get_orderbook(code))
+        offset = _random_offset_ticks()
+        price = add_ticks(best_bid, offset)
+        lot = _random_lot()
+        self.ensure_sellable_lot(code, lot, price)
+        return {
+            "side": "SELL",
+            "code": code,
+            "reference": best_bid,
+            "offset_ticks": offset,
+            "lot": lot,
+            "price": price,
+            "response": self.sell(code, lot=lot, price=price),
         }
 
     # -- trading actions ----------------------------------------------------

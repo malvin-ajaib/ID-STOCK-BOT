@@ -15,10 +15,66 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
 
 import config
 from src.bot import StockBot
 from src.client import ApiError
+
+
+def run_random_trading(code: str) -> int:
+    """Random-order mode: buy (account 1) and sell (account 2) in parallel threads.
+
+    Each thread places one random order (±1-5 ticks off the reference, random
+    lot) every RANDOM_INTERVAL_SECONDS until interrupted (Ctrl+C).
+    """
+    buy_bot = StockBot(account=config.ACCOUNT_BUY)
+    sell_bot = StockBot(account=config.ACCOUNT_SELL)
+
+    for label, bot in (("buy", buy_bot), ("sell", sell_bot)):
+        try:
+            bot.boot()
+        except ApiError as exc:
+            print(f"[{label} login failed] {exc}", file=sys.stderr)
+            return 1
+    print(
+        f"Random trading {code}: lot {config.RANDOM_LOT_MIN}-{config.RANDOM_LOT_MAX}, "
+        f"±{config.RANDOM_TICKS_MIN}-{config.RANDOM_TICKS_MAX} ticks, every "
+        f"{config.RANDOM_INTERVAL_SECONDS}s. Ctrl+C to stop.\n"
+    )
+
+    stop = threading.Event()
+
+    def loop(bot: StockBot, action_name: str, label: str) -> None:
+        action = getattr(bot, action_name)
+        while not stop.is_set():
+            try:
+                r = action(code)
+                print(
+                    f"[{label}] {r['side']} {r['lot']} lot @ {r['price']} "
+                    f"(ref {r['reference']}, {r['offset_ticks']:+d} ticks)"
+                )
+            except Exception as exc:  # keep the thread alive on any error
+                print(f"[{label}] error: {exc}", file=sys.stderr)
+            stop.wait(config.RANDOM_INTERVAL_SECONDS)
+
+    threads = [
+        threading.Thread(target=loop, args=(buy_bot, "random_buy", "BUY"), daemon=True),
+        threading.Thread(target=loop, args=(sell_bot, "random_sell", "SELL"), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    try:
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nStopping…")
+        stop.set()
+    for t in threads:
+        t.join()
+    return 0
 
 
 def main() -> int:
@@ -70,7 +126,16 @@ def main() -> int:
         default=100,
         help="Max orders to place in --until mode (default: 100).",
     )
+    parser.add_argument(
+        "--random",
+        action="store_true",
+        help="Random mode: buy (acct 1) + sell (acct 2) random orders in parallel.",
+    )
     args = parser.parse_args()
+
+    # Random mode: parallel buy/sell threads, needs only the stock code.
+    if args.random:
+        return run_random_trading(args.code)
 
     # Account 1 (buy) or account 2 (sell), chosen by --side.
     account = config.account_for(args.side)

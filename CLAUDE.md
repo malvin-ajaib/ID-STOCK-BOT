@@ -81,6 +81,15 @@ order); pass a number to force a fixed lot. CLI: `--until`, `--interval`,
 best bid drops to target. CLI: pick the side with `--side buy|sell` (default `buy`);
 `--ticks`/`--until`/`--interval`/`--max-attempts` apply to both sides.
 
+### Random mode (`--random`)
+`python main.py --code BMRI --random` runs `run_random_trading()` in main.py:
+two daemon threads — buy on account 1, sell on account 2 — each placing one
+random order every `RANDOM_INTERVAL_SECONDS`. `random_buy`/`random_sell` pick a
+random ±`RANDOM_TICKS_MIN..MAX` tick offset off the best ask/bid and a random lot
+in `[RANDOM_LOT_MIN, RANDOM_LOT_MAX]` (all env-driven). Each bot has its own
+client/session (thread-safe); Ctrl+C sets a stop `Event` and joins. Random sells
+still go through `ensure_sellable_lot` (top-up).
+
 ### Portfolio check + top-up before selling
 Every sell path calls `ensure_sellable_lot(code, lot, price)` first: `get_portfolio`
 → `_portfolio_lot` (reads `result.portfolio[0].lot`, 0 if the array is empty) → if the

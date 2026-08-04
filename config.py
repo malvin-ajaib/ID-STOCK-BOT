@@ -90,6 +90,15 @@ DEFAULT_STOCK_CODE = _get("AJAIB_STOCK_CODE", "BMRI")
 # best-level volume is split across multiple orders capped at this value.
 MAX_LOT_PER_ORDER = int(_get("AJAIB_MAX_LOT_PER_ORDER", "50000"))
 
+# --- Random trading mode (--random) ----------------------------------------
+# Each order: a random 1-5 ticks above OR below the reference price, a random
+# lot in [MIN, MAX], repeated every INTERVAL seconds (buy + sell in parallel).
+RANDOM_LOT_MIN = int(_get("AJAIB_RANDOM_LOT_MIN", "100"))
+RANDOM_LOT_MAX = int(_get("AJAIB_RANDOM_LOT_MAX", "5000"))
+RANDOM_INTERVAL_SECONDS = float(_get("AJAIB_RANDOM_INTERVAL_SECONDS", "3"))
+RANDOM_TICKS_MIN = int(_get("AJAIB_RANDOM_TICKS_MIN", "1"))
+RANDOM_TICKS_MAX = int(_get("AJAIB_RANDOM_TICKS_MAX", "5"))
+
 # --- Device / app identity headers -----------------------------------------
 # RULE: every header value is read from env, never hardcoded in code.
 # The active set is chosen by AJAIB_DEVICE_PROFILE (IOS or ANDROID).
