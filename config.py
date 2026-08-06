@@ -78,7 +78,7 @@ PORTFOLIO_PATH = "/api/v3/stock/portfoliodetail/"
 # on its own internal host — not built from BASE_URL.
 TOPUP_URL = _get(
     "AJAIB_TOPUP_URL",
-    "http://stock-asset-ledger-svc.stg.ajaib.int"
+    "http://stock-asset-ledger-http.stg.ajaib.int"
     "/api/v1/internal/stock-asset-ledger/asset/REG/credit",
 )
 
