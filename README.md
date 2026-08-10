@@ -22,6 +22,12 @@ python main.py --code BMRI --side sell
 # SELL: 2 lots, 3 ticks below best bid
 python main.py --code BMRI --side sell --lot 2 --ticks 3
 
+# BUY at an EXACT price + lot (one order)
+python main.py --code BMRI --price 4300 --lot 2
+
+# SELL at an EXACT price + lot (tops up account 2 if short)
+python main.py --code BMRI --side sell --price 4300 --lot 2
+
 # BUY UNTIL price reached: keep buying at 4000 until best ask hits 4000
 #   (lot omitted -> uses the volume at the best ask each step)
 python main.py --code BMRI --until 4000
@@ -51,6 +57,7 @@ python main.py --help
 | `--side` | `buy` | ticks / until | `buy` (acct 1) or `sell` (acct 2) |
 | `--lot` | 1 (ticks) / auto (until) | ticks / until | Lots per order; until auto = best level volume |
 | `--ticks` | 5 | ticks flow | Ticks above ask / below bid |
+| `--price` | — | exact flow | Place ONE order at this exact price |
 | `--until` | — | until flow | Target price; loop until market reaches it |
 | `--interval` | 1.0 | until flow | Seconds between attempts |
 | `--max-attempts` | 100 | until flow | Order cap for the until loop |

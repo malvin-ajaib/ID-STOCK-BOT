@@ -66,6 +66,10 @@ the same request with `_allow_refresh=False` so it can never loop.
 order book → `_best_ask_price` (lowest price in `result.ask.items`) →
 `add_ticks(best_ask, ticks)` (IDX band-aware) → `buy()`. Always executes.
 
+### Exact price order
+`--price N` places ONE order at exactly N with `--lot` (default 1) on `--side`.
+Buy calls `buy()` directly; sell runs `ensure_sellable_lot` then `sell()`.
+
 ### Buy until target price
 `buy_until_price(code, target_price, lot=None, poll_interval=1.0, max_attempts=100)`:
 loops — while best ask < target, place a limit buy at `target_price`, sleep, re-check.

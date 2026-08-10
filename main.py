@@ -109,6 +109,13 @@ def main() -> int:
         help="Ticks above best ask (buy) / below best bid (sell). Default: 5.",
     )
     parser.add_argument(
+        "--price",
+        type=int,
+        default=None,
+        help="Place ONE order at this exact price (with --lot, --side). "
+        "Skips the ticks flow.",
+    )
+    parser.add_argument(
         "--until",
         type=int,
         default=None,
@@ -189,6 +196,26 @@ def main() -> int:
             f"\n{code}: {args.side} target {result['target_price']} {status} after "
             f"{result['orders_placed']} order(s)."
         )
+        return 0
+
+    # --- exact price: one order at --price with --lot ---------------------
+    if args.price is not None:
+        lot = args.lot if args.lot is not None else 1
+        try:
+            if args.side == "buy":
+                response = bot.buy(code, lot=lot, price=args.price)
+            else:
+                # Top up the sell account if the holding is short.
+                bot.ensure_sellable_lot(code, lot, args.price)
+                response = bot.sell(code, lot=lot, price=args.price)
+        except ApiError as exc:
+            print(f"[{args.side} failed] {exc}", file=sys.stderr)
+            print(f"  response body: {exc.body}", file=sys.stderr)
+            return 1
+
+        print(f"\n{code}: {args.side} {lot} lot @ {args.price} (exact price)")
+        print("Order sent. Response:")
+        print(json.dumps(response, indent=2, ensure_ascii=False))
         return 0
 
     # --- ticks flow: order book -> best ask/bid -> +/-N ticks -> order ----
