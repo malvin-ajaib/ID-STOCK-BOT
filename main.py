@@ -205,9 +205,8 @@ def main() -> int:
             if args.side == "buy":
                 response = bot.buy(code, lot=lot, price=args.price)
             else:
-                # Top up the sell account if the holding is short.
-                bot.ensure_sellable_lot(code, lot, args.price)
-                response = bot.sell(code, lot=lot, price=args.price)
+                # Guarded sell: tops up / injects liquidity + retries on failure.
+                response = bot.place_sell(code, lot, args.price)
         except ApiError as exc:
             print(f"[{args.side} failed] {exc}", file=sys.stderr)
             print(f"  response body: {exc.body}", file=sys.stderr)

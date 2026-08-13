@@ -94,11 +94,15 @@ in `[RANDOM_LOT_MIN, RANDOM_LOT_MAX]` (all env-driven). Each bot has its own
 client/session (thread-safe); Ctrl+C sets a stop `Event` and joins. Random sells
 still go through `ensure_sellable_lot` (top-up).
 
-### Portfolio check + top-up before selling
-Every sell path calls `ensure_sellable_lot(code, lot, price)` first: `get_portfolio`
-→ `_portfolio_lot` (reads `result.portfolio[0].lot`, 0 if the array is empty) → if the
-holding is short, `top_up(code, needed_lot, price)` credits stock so the sell can go
-through. The check runs on the sell account (account 2).
+### Selling: portfolio check, top-up, liquidity-injection retry
+Every sell path goes through `place_sell(code, lot, price)`:
+1. `ensure_sellable_lot(code, lot, price)` — `get_portfolio` → `_portfolio_lot`
+   (reads `result.portfolio[0].lot`, 0 if empty) → if short, `top_up(code, needed_lot, price)`.
+2. try `sell()`; on failure (e.g. **HTTP 425 "too early"** — the credit hasn't
+   settled), `top_up(code, LIQUIDITY_INJECT_LOT, price)` (default 50000 lot), wait
+   `LIQUIDITY_RETRY_DELAY_SECONDS`, then retry the sell ONCE (second failure propagates).
+
+Runs on the sell account (account 2).
 
 `top_up` POSTs to `config.TOPUP_URL` (exact internal URL, NOT built from BASE_URL):
 `shares = lot * 100 * 10`, `price` = target price, `source = "TRADING_SERVICE"`,

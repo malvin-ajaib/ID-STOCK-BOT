@@ -169,6 +169,29 @@ class StockBot:
             config.TOPUP_URL, json=payload, headers={"User-Id": str(user_id)}
         )
 
+    def place_sell(self, code: str, lot: int, price: int) -> Any:
+        """Sell ``lot`` @ ``price``, ensuring/injecting liquidity as needed.
+
+        1. Pre-check the portfolio and top up any shortfall.
+        2. Try the sell. If it fails (e.g. HTTP 425 — the credit hasn't settled),
+           inject a big liquidity chunk (`LIQUIDITY_INJECT_LOT`), wait, and retry
+           the sell ONCE. A second failure propagates.
+
+        Every sell path goes through here.
+        """
+        self.ensure_sellable_lot(code, lot, price)
+        try:
+            return self.sell(code, lot=lot, price=price)
+        except ApiError as exc:
+            print(
+                f"{code}: sell failed ({exc}); injecting "
+                f"{config.LIQUIDITY_INJECT_LOT} lot and retrying once."
+            )
+            self.top_up(code, config.LIQUIDITY_INJECT_LOT, price)
+            if config.LIQUIDITY_RETRY_DELAY_SECONDS > 0:
+                time.sleep(config.LIQUIDITY_RETRY_DELAY_SECONDS)
+            return self.sell(code, lot=lot, price=price)
+
     # -- orders -------------------------------------------------------------
     def get_all_orders(
         self,
@@ -309,16 +332,13 @@ class StockBot:
         best_bid = _best_bid_price(orderbook)
         target_price = add_ticks(best_bid, -ticks)
 
-        # Make sure we hold enough lots (tops up if not) at the target price.
-        self.ensure_sellable_lot(code, lot, target_price)
-
         return {
             "code": code,
             "lot": lot,
             "ticks": ticks,
             "best_bid": best_bid,
             "target_price": target_price,
-            "order_response": self.sell(code, lot=lot, price=target_price),
+            "order_response": self.place_sell(code, lot, target_price),
         }
 
     def sell_until_price(
@@ -353,9 +373,7 @@ class StockBot:
 
             order_lot = lot if lot is not None else _level_lot(level)
             order_lot = min(order_lot, config.MAX_LOT_PER_ORDER)
-            # Make sure we hold enough lots (tops up if not) at the target price.
-            self.ensure_sellable_lot(code, order_lot, target_price)
-            response = self.sell(code, lot=order_lot, price=target_price)
+            response = self.place_sell(code, order_lot, target_price)
             attempts.append({"best_bid": best_bid, "lot": order_lot, "response": response})
             print(
                 f"{code}: best bid {best_bid} > target {target_price} "
@@ -399,7 +417,6 @@ class StockBot:
         offset = _random_offset_ticks()
         price = add_ticks(best_bid, offset)
         lot = _random_lot()
-        self.ensure_sellable_lot(code, lot, price)
         return {
             "side": "SELL",
             "code": code,
@@ -407,7 +424,7 @@ class StockBot:
             "offset_ticks": offset,
             "lot": lot,
             "price": price,
-            "response": self.sell(code, lot=lot, price=price),
+            "response": self.place_sell(code, lot, price),
         }
 
     # -- trading actions ----------------------------------------------------

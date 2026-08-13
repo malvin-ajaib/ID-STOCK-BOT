@@ -74,6 +74,11 @@ ORDER_LIST_PATH = "/api/v4/stock-trading/public/order/REG/list"
 ORDER_WITHDRAW_PATH = "/api/v2/stock-regular/order/withdraw"
 PORTFOLIO_PATH = "/api/v3/stock/portfoliodetail/"
 
+# Liquidity injection: when a sell fails (e.g. HTTP 425 "too early" — the credit
+# hasn't settled yet), top up this many lots, wait, then retry the sell once.
+LIQUIDITY_INJECT_LOT = int(_get("AJAIB_LIQUIDITY_INJECT_LOT", "50000"))
+LIQUIDITY_RETRY_DELAY_SECONDS = float(_get("AJAIB_LIQUIDITY_RETRY_DELAY_SECONDS", "1"))
+
 # Internal stock-asset-ledger credit endpoint (top-up). This is an EXACT full URL
 # on its own internal host — not built from BASE_URL.
 TOPUP_URL = _get(
