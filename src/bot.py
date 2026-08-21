@@ -70,6 +70,14 @@ def _portfolio_lot(response: Any) -> int:
     return int(lot) if isinstance(lot, (int, float)) else 0
 
 
+def _clamp_price(price: int, arb: int, ara: int) -> int:
+    """Keep an order price within the auto-reject band [ARB, ARA] (ARA 0 = none)."""
+    price = max(price, arb)   # ARB = lower (Auto Reject Bawah)
+    if ara > 0:               # ARA = upper (Auto Reject Atas)
+        price = min(price, ara)
+    return price
+
+
 def _random_offset_ticks() -> int:
     """Random 1-5 (config range) ticks, randomly above (+) or below (-)."""
     magnitude = random.randint(config.RANDOM_TICKS_MIN, config.RANDOM_TICKS_MAX)
@@ -109,6 +117,39 @@ class StockBot:
         code = code or config.DEFAULT_STOCK_CODE
         # Uses the client's global base URL (PLE host).
         return self.client.get(config.ORDERBOOK_PATH, params={"code": code})
+
+    def get_price_detail(self, code: str) -> Any:
+        """Fetch stock price detail: current `price` + ARA/ARB limits, etc."""
+        return self.client.get(config.PRICE_DETAIL_PATH.format(code=code))
+
+    def _price_and_band(self, code: str, orderbook: Any, side: str) -> tuple:
+        """Return (reference_price, ARB, ARA) for a trade side.
+
+        Reference is best ask (buy) / best bid (sell) from the order book, or the
+        price-detail `price` when that side is empty. ARA/ARB ALWAYS come from the
+        price-detail API (`price_limit_lower` / `price_limit_upper`) — never env.
+        """
+        getter = _best_ask_price if side == "buy" else _best_bid_price
+        try:
+            reference = getter(orderbook)
+        except RuntimeError:
+            reference = None  # this side of the order book is empty
+
+        # ARA/ARB (and the reference when the book is empty) from price detail.
+        try:
+            detail = self.get_price_detail(code)
+            d = detail.get("result") if isinstance(detail.get("result"), dict) else detail
+            arb = int(d.get("price_limit_lower") or 0)
+            ara = int(d.get("price_limit_upper") or 0)
+            if reference is None:
+                reference = int(d.get("price") or config.FALLBACK_PRICE)
+        except ApiError:
+            # Price detail unavailable: no clamp, fall back for the reference.
+            arb, ara = 0, 0
+            if reference is None:
+                reference = config.FALLBACK_PRICE
+
+        return reference, arb, ara
 
     # -- portfolio ----------------------------------------------------------
     def get_portfolio(self, ticker_code: str) -> Any:
@@ -261,8 +302,8 @@ class StockBot:
         Always places the order. Returns a summary dict including the response.
         """
         orderbook = self.get_orderbook(code)
-        best_ask = _best_ask_price(orderbook)
-        target_price = add_ticks(best_ask, ticks)
+        best_ask, arb, ara = self._price_and_band(code, orderbook, "buy")
+        target_price = _clamp_price(add_ticks(best_ask, ticks), arb, ara)
 
         return {
             "code": code,
@@ -329,8 +370,8 @@ class StockBot:
         Mirror of buy_ticks_above_ask. Always places the order.
         """
         orderbook = self.get_orderbook(code)
-        best_bid = _best_bid_price(orderbook)
-        target_price = add_ticks(best_bid, -ticks)
+        best_bid, arb, ara = self._price_and_band(code, orderbook, "sell")
+        target_price = _clamp_price(add_ticks(best_bid, -ticks), arb, ara)
 
         return {
             "code": code,
@@ -394,9 +435,9 @@ class StockBot:
     # -- random single orders (used by --random threads) --------------------
     def random_buy(self, code: str) -> dict:
         """One buy at a random ±1-5 ticks off the best ask, random lot."""
-        best_ask = _best_ask_price(self.get_orderbook(code))
+        best_ask, arb, ara = self._price_and_band(code, self.get_orderbook(code), "buy")
         offset = _random_offset_ticks()
-        price = add_ticks(best_ask, offset)
+        price = _clamp_price(add_ticks(best_ask, offset), arb, ara)
         lot = _random_lot()
         return {
             "side": "BUY",
@@ -413,9 +454,9 @@ class StockBot:
 
         Tops up the holding first if short (same guard as the other sell flows).
         """
-        best_bid = _best_bid_price(self.get_orderbook(code))
+        best_bid, arb, ara = self._price_and_band(code, self.get_orderbook(code), "sell")
         offset = _random_offset_ticks()
-        price = add_ticks(best_bid, offset)
+        price = _clamp_price(add_ticks(best_bid, offset), arb, ara)
         lot = _random_lot()
         return {
             "side": "SELL",

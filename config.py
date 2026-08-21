@@ -68,6 +68,7 @@ PIN_VALIDATE_PATH = "/api/v4/users/me/pin/validate"
 REFRESH_PATH = "/api/v7/refresh/"
 USERS_ME_PATH = "/api/v3/users/me/"
 ORDERBOOK_PATH = "/api/v1/stock/data/orderbook"
+PRICE_DETAIL_PATH = "/api/v1/stock/detail/{code}/price/"
 ORDER_BUY_PATH = "/api/v1/stock-regular/order/buy"
 ORDER_SELL_PATH = "/api/v1/stock-regular/order/sell"
 ORDER_LIST_PATH = "/api/v4/stock-trading/public/order/REG/list"
@@ -90,6 +91,11 @@ TOPUP_URL = _get(
 # --- Trading defaults ------------------------------------------------------
 # Hardcoded-but-overridable stock code (change via AJAIB_STOCK_CODE).
 DEFAULT_STOCK_CODE = _get("AJAIB_STOCK_CODE", "BMRI")
+
+# Fallback "current price" used only when the order book side is empty AND the
+# price-detail API is unavailable. The tick offset is applied to this reference.
+# ARA/ARB always come from the price-detail API (never env).
+FALLBACK_PRICE = int(_get("AJAIB_FALLBACK_PRICE", "50"))
 
 # Max lots allowed in a single order request. In --until auto-lot mode a large
 # best-level volume is split across multiple orders capped at this value.

@@ -66,6 +66,21 @@ the same request with `_allow_refresh=False` so it can never loop.
 order book → `_best_ask_price` (lowest price in `result.ask.items`) →
 `add_ticks(best_ask, ticks)` (IDX band-aware) → `buy()`. Always executes.
 
+### Price detail, ARA/ARB clamp, empty order book
+Tick-based flows (`buy_ticks_above_ask`, `sell_ticks_below_bid`, `random_buy`,
+`random_sell`) get their reference + band from `_price_and_band(code, orderbook,
+side)` → `(reference, ARB, ARA)`:
+- Reference = best ask (buy) / best bid (sell) from the order book, or the
+  price-detail `price` when that side is empty.
+- **ARA/ARB ALWAYS come from `get_price_detail(code)`**
+  (`/api/v1/stock/detail/{code}/price/` → `price_limit_upper` / `price_limit_lower`),
+  never env. So every tick order also fetches the price detail.
+- If price detail fails: no clamp (`arb=ara=0`), reference falls back to the book
+  or `config.FALLBACK_PRICE`.
+
+The final price is clamped by `_clamp_price(price, arb, ara)` to `[ARB, ARA]`
+(ARB = Auto Reject Bawah/lower, ARA = Auto Reject Atas/upper; 0 = that bound off).
+
 ### Exact price order
 `--price N` places ONE order at exactly N with `--lot` (default 1) on `--side`.
 Buy calls `buy()` directly; sell runs `ensure_sellable_lot` then `sell()`.
