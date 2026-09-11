@@ -17,8 +17,10 @@ data (order book), and places/queries orders. All interaction is plain HTTP via
    `self.client.post(path, json=...)`. Do not copy the curl's headers.
 2. **Every base URL and header value is read from env** (`config.py` via `_get`),
    never hardcoded in logic.
-3. **No session is persisted.** The bot logs in fresh on every run; there is no
-   `.session.json`. The refresh token lives in memory on the client.
+3. **Sessions are cached in `.session.json`** (keyed by account email) so multiple
+   terminals running the same account reuse one session instead of each logging in
+   fresh. `--force-login` ignores the cache. A 401 refreshes and updates the cache;
+   if another process already refreshed, the cached token is adopted instead.
 4. **The main buy flow always executes** (no dry run). `buy_ticks_above_ask()`
    places the order every call.
 

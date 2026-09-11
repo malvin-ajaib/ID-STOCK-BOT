@@ -99,7 +99,7 @@ class StockBot:
         )
 
     def boot(self, force_login: bool = False) -> dict:
-        """Authenticate on startup — logs in fresh every run (no caching)."""
+        """Authenticate on startup — reuse the cached session, else log in."""
         session = ensure_authenticated(self.client, self.account, force=force_login)
         if not self.client.is_authenticated:
             raise RuntimeError(

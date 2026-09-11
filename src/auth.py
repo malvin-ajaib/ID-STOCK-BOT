@@ -1,14 +1,45 @@
-"""Authentication: log in fresh every run (no session is persisted).
+"""Authentication: login -> PIN validate, with a cached session per account.
 
-Each boot runs login -> PIN validate to obtain an access token. The refresh
-token is kept in memory on the client so a 401 can refresh once and retry.
+Sessions are persisted to config.SESSION_FILE keyed by account email, so multiple
+terminals running the same account reuse ONE session instead of each logging in
+fresh (which could invalidate the others). A 401 refreshes the token and updates
+the cache; pass force=True (--force-login) to ignore the cache and log in again.
 """
 from __future__ import annotations
 
+import json
+import os
+import time
 from typing import Any, Optional
 
 import config
 from src.client import ApiClient, ApiError
+
+
+def _load_store() -> dict:
+    """Load the whole session store (a dict keyed by account email)."""
+    try:
+        return json.loads(config.SESSION_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_entry(email: str, entry: dict) -> None:
+    """Persist one account's session, atomically, preserving other accounts."""
+    store = _load_store()
+    store[email] = entry
+    tmp = f"{config.SESSION_FILE}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(store, fh, indent=2)
+        os.replace(tmp, config.SESSION_FILE)  # atomic; safe for concurrent readers
+    except OSError:
+        pass  # caching must never break auth
+
+
+def _load_entry(email: str) -> Optional[dict]:
+    entry = _load_store().get(email)
+    return entry if isinstance(entry, dict) and entry.get("token") else None
 
 
 def _extract_token(login_response: Any) -> Optional[str]:
@@ -121,13 +152,23 @@ def validate_pin(client: ApiClient, account: dict, pin_token: str) -> Any:
 
 
 def refresh_token(client: ApiClient, account: dict) -> Optional[str]:
-    """Exchange the in-memory refresh token for a new access token.
+    """Refresh the access token, coordinating via the shared session store.
 
-    Authenticates with the refresh token (``jwt`` scheme) plus the ``User-Id``
-    header and applies the new token to the client. Returns the new access
-    token, or None if refresh isn't possible.
+    If another process already refreshed (the cached token differs from ours),
+    adopt that token instead of refreshing again. Otherwise exchange the refresh
+    token for a new access token and update the cache. Returns the new token or
+    None if refresh isn't possible.
     """
-    rt = client.refresh_jwt
+    email = account["email"]
+
+    # Another terminal may have already refreshed — reuse its token if so.
+    cached = _load_entry(email)
+    if cached and cached.get("token") and cached["token"] != client._token:
+        client.set_token(cached["token"])
+        client.refresh_jwt = cached.get("refresh_token")
+        return cached["token"]
+
+    rt = client.refresh_jwt or (cached or {}).get("refresh_token")
     if not rt:
         return None
 
@@ -146,15 +187,20 @@ def refresh_token(client: ApiClient, account: dict) -> Optional[str]:
     if not new_access:
         return None
 
-    new_refresh = _extract_refresh(response)
-    if new_refresh:
-        client.refresh_jwt = new_refresh
+    new_refresh = _extract_refresh(response) or rt
+    client.refresh_jwt = new_refresh
     client.set_token(new_access)
+    _save_entry(email, {
+        "token": new_access,
+        "refresh_token": new_refresh,
+        "ajaib_id": client.ajaib_id,
+        "refreshed_at": int(time.time()),
+    })
     return new_access
 
 
 def authenticate(client: ApiClient, account: dict) -> dict:
-    """Run the full login -> PIN validate flow and apply the token in memory."""
+    """Run the full login -> PIN validate flow and cache the session."""
     pin_token = login(client, account)
     validate_response = validate_pin(client, account, pin_token)
 
@@ -164,18 +210,28 @@ def authenticate(client: ApiClient, account: dict) -> dict:
 
     client.set_token(access_token)
     client.refresh_jwt = _extract_refresh(validate_response)
-
     ajaib_id = fetch_ajaib_id(client)
 
-    return {
+    session = {
         "token": access_token,
-        "pin_token": pin_token,
         "refresh_token": client.refresh_jwt,
         "ajaib_id": ajaib_id,
-        "raw_validate": validate_response,
+        "obtained_at": int(time.time()),
     }
+    _save_entry(account["email"], session)
+    return session
 
 
 def ensure_authenticated(client: ApiClient, account: dict, force: bool = False) -> dict:
-    """Log in fresh on every call (no session is cached)."""
+    """Reuse this account's cached session if present; otherwise log in fresh.
+
+    ``force=True`` (--force-login) ignores the cache and re-authenticates.
+    """
+    if not force:
+        cached = _load_entry(account["email"])
+        if cached:
+            client.set_token(cached["token"])
+            client.refresh_jwt = cached.get("refresh_token")
+            client.ajaib_id = cached.get("ajaib_id")
+            return cached
     return authenticate(client, account)

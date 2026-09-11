@@ -1,5 +1,6 @@
 # Secrets & local state
 .env
+.session.json
 api.logs
 
 # Python

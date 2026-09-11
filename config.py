@@ -19,6 +19,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # Every API hit is appended here as a reproducible curl command.
 API_LOG_FILE = BASE_DIR / "api.logs"
 
+# Cached login sessions (per account), shared across concurrent runs so multiple
+# terminals reuse one session instead of each logging in fresh.
+SESSION_FILE = BASE_DIR / ".session.json"
+
 
 def _get(name: str, default: str) -> str:
     value = os.getenv(name, default)
