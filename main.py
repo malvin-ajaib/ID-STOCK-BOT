@@ -1,6 +1,6 @@
 """Entry point.
 
-Logs in fresh on every run (no session cached). Pass --force-login to be explicit.
+Reuses a cached per-account session from .session.json; --force-login re-authenticates.
 
 Main flow: auto login -> read order book -> buy 5 ticks above the best ask.
 The order is always placed.

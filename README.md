@@ -2,7 +2,8 @@
 
 A Python automation bot for the Ajaib stock API over plain HTTP (`requests`).
 It logs in (login → PIN validate), reads the order book, and places/queries/cancels
-orders. Every run logs in fresh — no session is stored on disk.
+orders. Sessions are cached per account in `.session.json` so multiple terminals
+reuse one login (`--force-login` to re-authenticate).
 
 ## ⚡ Command cheat sheet
 
@@ -70,6 +71,7 @@ Functions not on the CLI (`get_all_orders`, `cancel_order`, `cancel_all_orders`,
 ## Features
 
 - Two-step auth: `login` → `pin/validate` → `access_token` (`jwt` scheme)
+- Per-account session cache (`.session.json`) — concurrent terminals share one login
 - Auto token **refresh once on 401**, then retries the request
 - Order book read, buy, sell, list orders, cancel order, cancel-all
 - Headline flow: order book → best ask → **+5 ticks** → buy (IDX tick-aware)
