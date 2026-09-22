@@ -81,15 +81,31 @@ Functions not on the CLI (`get_all_orders`, `cancel_order`, `cancel_all_orders`,
 
 ## Setup
 
-Uses a virtual environment (venv).
+Uses a local virtual environment (venv). The venv is **not** committed — it isn't
+portable (its `python` is a symlink to the interpreter that created it), so each
+machine builds its own. `setup.sh` does that from `requirements.txt`:
 
 ```bash
-cd /Users/malvin/Documents/id-stock-bot
-python3 -m venv venv
+git clone git@github.com:malvin-ajaib/ID-STOCK-BOT.git
+cd ID-STOCK-BOT
+./setup.sh                        # creates venv/ on this machine's Python
 source venv/bin/activate          # Windows: venv\Scripts\Activate.ps1
-pip install -r requirements.txt
 cp .env.example .env              # then edit .env (see below)
 ```
+
+`setup.sh` picks the first `python3` on `PATH`. Pin a specific interpreter with
+`PYTHON=/path/to/python3 ./setup.sh`. Re-run it any time to rebuild a broken venv.
+
+<details>
+<summary>Manual setup (no script)</summary>
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+</details>
 
 ### Configure `.env`
 
