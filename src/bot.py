@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 import config
-from src.auth import ensure_authenticated, refresh_token
+from src.auth import ensure_authenticated, refresh_or_relogin
 from src.client import ApiClient, ApiError
 from src.ticks import add_ticks
 
@@ -59,6 +59,16 @@ def _level_lot(level: dict) -> int:
     return int(lot) if isinstance(lot, (int, float)) and lot > 0 else 1
 
 
+def _auto_lot(orderbook: Any, side: str) -> int:
+    """Default order lot: the volume at the best level, or config.FALLBACK_LOT
+    when that side of the book is empty (nothing to read a volume from)."""
+    level_fn = _best_ask_level if side == "buy" else _best_bid_level
+    try:
+        return _level_lot(level_fn(orderbook))
+    except RuntimeError:
+        return config.FALLBACK_LOT
+
+
 def _portfolio_lot(response: Any) -> int:
     """Owned lot from ``result.portfolio[0].lot``; 0 when the portfolio is empty."""
     result = response.get("result") if isinstance(response, dict) else None
@@ -93,9 +103,11 @@ class StockBot:
     def __init__(self, account: dict | None = None):
         self.account = account if account is not None else config.ACCOUNT_BUY
         self.client = ApiClient()
-        # On a 401, refresh the token once and retry the request automatically.
+        # On a 401: refresh the token, and if that fails re-login fully, then
+        # retry the request once. The client guards against re-entry so this
+        # can never loop (401 -> refresh -> re-login -> stop).
         self.client.set_refresh_handler(
-            lambda: refresh_token(self.client, self.account)
+            lambda: refresh_or_relogin(self.client, self.account)
         )
 
     def boot(self, force_login: bool = False) -> dict:
@@ -331,6 +343,11 @@ class StockBot:
         again. Stops when the best ask has reached ``target_price`` or after
         ``max_attempts`` orders (safety cap).
 
+        If the ask side of the book is empty, the reference and the ARA/ARB band
+        come from the price-detail API (same as the tick/random flows). The
+        target price is clamped to that band, and ``lot`` (when auto) falls back
+        to config.FALLBACK_LOT since there is no level volume to read.
+
         ``lot`` defaults to the volume sitting at the best ask each iteration
         (so one order clears one price level); pass a number to force a fixed lot.
         """
@@ -338,23 +355,25 @@ class StockBot:
         reached = False
 
         for _ in range(max_attempts):
-            level = _best_ask_level(self.get_orderbook(code))
-            best_ask = int(level["price"])
-            if best_ask >= target_price:
+            orderbook = self.get_orderbook(code)
+            best_ask, arb, ara = self._price_and_band(code, orderbook, "buy")
+            price = _clamp_price(target_price, arb, ara)
+            if best_ask >= price:
                 reached = True
                 break
 
-            order_lot = lot if lot is not None else _level_lot(level)
+            order_lot = lot if lot is not None else _auto_lot(orderbook, "buy")
             order_lot = min(order_lot, config.MAX_LOT_PER_ORDER)
-            response = self.buy(code, lot=order_lot, price=target_price)
+            response = self.buy(code, lot=order_lot, price=price)
             attempts.append({"best_ask": best_ask, "lot": order_lot, "response": response})
             print(
-                f"{code}: best ask {best_ask} < target {target_price} "
-                f"-> bought {order_lot} lot @ {target_price} (attempt {len(attempts)})"
+                f"{code}: best ask {best_ask} < target {price} "
+                f"-> bought {order_lot} lot @ {price} (attempt {len(attempts)})"
             )
             time.sleep(poll_interval)
         else:
-            reached = _best_ask_price(self.get_orderbook(code)) >= target_price
+            best_ask, arb, ara = self._price_and_band(code, self.get_orderbook(code), "buy")
+            reached = best_ask >= _clamp_price(target_price, arb, ara)
 
         return {
             "code": code,
@@ -399,6 +418,11 @@ class StockBot:
         ``poll_interval`` seconds, and checks again. Stops when the best bid has
         dropped to ``target_price`` or after ``max_attempts`` orders (safety cap).
 
+        If the bid side of the book is empty, the reference and the ARA/ARB band
+        come from the price-detail API (same as the tick/random flows). The
+        target price is clamped to that band, and ``lot`` (when auto) falls back
+        to config.FALLBACK_LOT since there is no level volume to read.
+
         ``lot`` defaults to the volume sitting at the best bid each iteration
         (so one order clears one price level); pass a number to force a fixed lot.
         """
@@ -406,23 +430,25 @@ class StockBot:
         reached = False
 
         for _ in range(max_attempts):
-            level = _best_bid_level(self.get_orderbook(code))
-            best_bid = int(level["price"])
-            if best_bid <= target_price:
+            orderbook = self.get_orderbook(code)
+            best_bid, arb, ara = self._price_and_band(code, orderbook, "sell")
+            price = _clamp_price(target_price, arb, ara)
+            if best_bid <= price:
                 reached = True
                 break
 
-            order_lot = lot if lot is not None else _level_lot(level)
+            order_lot = lot if lot is not None else _auto_lot(orderbook, "sell")
             order_lot = min(order_lot, config.MAX_LOT_PER_ORDER)
-            response = self.place_sell(code, order_lot, target_price)
+            response = self.place_sell(code, order_lot, price)
             attempts.append({"best_bid": best_bid, "lot": order_lot, "response": response})
             print(
-                f"{code}: best bid {best_bid} > target {target_price} "
-                f"-> sold {order_lot} lot @ {target_price} (attempt {len(attempts)})"
+                f"{code}: best bid {best_bid} > target {price} "
+                f"-> sold {order_lot} lot @ {price} (attempt {len(attempts)})"
             )
             time.sleep(poll_interval)
         else:
-            reached = _best_bid_price(self.get_orderbook(code)) <= target_price
+            best_bid, arb, ara = self._price_and_band(code, self.get_orderbook(code), "sell")
+            reached = best_bid <= _clamp_price(target_price, arb, ara)
 
         return {
             "code": code,

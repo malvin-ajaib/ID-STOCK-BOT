@@ -101,6 +101,10 @@ DEFAULT_STOCK_CODE = _get("AJAIB_STOCK_CODE", "BMRI")
 # ARA/ARB always come from the price-detail API (never env).
 FALLBACK_PRICE = int(_get("AJAIB_FALLBACK_PRICE", "50"))
 
+# Auto lot used when the order book side is empty (no level volume to read) and
+# --lot was not given — e.g. --until on a one-sided book.
+FALLBACK_LOT = int(_get("AJAIB_FALLBACK_LOT", "1000"))
+
 # Max lots allowed in a single order request. In --until auto-lot mode a large
 # best-level volume is split across multiple orders capped at this value.
 MAX_LOT_PER_ORDER = int(_get("AJAIB_MAX_LOT_PER_ORDER", "50000"))

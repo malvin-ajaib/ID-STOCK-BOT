@@ -199,6 +199,26 @@ def refresh_token(client: ApiClient, account: dict) -> Optional[str]:
     return new_access
 
 
+def refresh_or_relogin(client: ApiClient, account: dict) -> Optional[str]:
+    """401 recovery: try to refresh the token; if that fails, re-login fully.
+
+    Returns the new access token, or None if both refresh and re-login fail (the
+    caller then surfaces the original 401). This is the handler ApiClient calls
+    on a 401 — the client guards it so the login/validate calls made here cannot
+    recurse, bounding recovery to: 401 -> refresh (fail) -> re-login (fail) -> stop.
+    """
+    token = refresh_token(client, account)
+    if token:
+        return token
+
+    # Refresh failed (no refresh token, expired, or rejected) — log in again.
+    try:
+        session = authenticate(client, account)
+    except (ApiError, RuntimeError):
+        return None
+    return session.get("token")
+
+
 def authenticate(client: ApiClient, account: dict) -> dict:
     """Run the full login -> PIN validate flow and cache the session."""
     pin_token = login(client, account)

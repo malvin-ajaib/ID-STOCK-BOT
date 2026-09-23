@@ -75,8 +75,12 @@ class ApiClient:
         self.ajaib_id: Optional[str] = None
 
         # Called once on a 401 to obtain a fresh token; returns the new token
-        # (and is expected to apply it via set_token) or None if refresh failed.
+        # (and is expected to apply it via set_token) or None if it failed.
         self._refresh_handler: Optional[Callable[[], Optional[str]]] = None
+        # True while the refresh handler is running, so any nested requests it
+        # makes (refresh / re-login / validate) can never re-trigger it. This
+        # bounds recovery to a single attempt: 401 -> handler -> one retry.
+        self._refreshing = False
 
     def set_refresh_handler(self, handler: Optional[Callable[[], Optional[str]]]) -> None:
         self._refresh_handler = handler
@@ -119,9 +123,20 @@ class ApiClient:
 
         _log_curl(resp.request, resp.status_code, body)
 
-        # Session expired: refresh the token once and retry the same request.
-        if resp.status_code == 401 and _allow_refresh and self._refresh_handler:
-            new_token = self._refresh_handler()
+        # Session expired: recover the token once, then retry the same request.
+        # The handler refreshes and, if that fails, re-logs in. `_refreshing`
+        # blocks it from firing again for the auth calls it makes internally.
+        if (
+            resp.status_code == 401
+            and _allow_refresh
+            and self._refresh_handler
+            and not self._refreshing
+        ):
+            self._refreshing = True
+            try:
+                new_token = self._refresh_handler()
+            finally:
+                self._refreshing = False
             if new_token:
                 # Drop any stale per-request Authorization so the refreshed
                 # session header is used on retry.
