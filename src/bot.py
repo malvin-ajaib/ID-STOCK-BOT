@@ -88,6 +88,34 @@ def _clamp_price(price: int, arb: int, ara: int) -> int:
     return price
 
 
+def _side_volume(orderbook: Any, side: str, depth: int) -> int:
+    """Total lot on one side of the book over its top ``depth`` levels.
+
+    Returns 0 when that side is empty. 'bid' is summed from the highest price
+    down, 'ask' from the lowest price up (i.e. the levels nearest the touch).
+    """
+    try:
+        levels = _side_levels(orderbook, side)
+    except RuntimeError:
+        return 0
+    levels = sorted(levels, key=lambda lv: lv["price"], reverse=(side == "bid"))
+    return sum(_level_lot(lv) for lv in levels[:depth])
+
+
+def _balancing_lot(own_vol: int, other_vol: int) -> int:
+    """Lot to add to our side so the book moves toward balance.
+
+    If our side trails the other, add a fraction (BALANCE_FILL_RATIO) of the
+    deficit; if we're already level or heavier, add only a token RANDOM_LOT_MIN.
+    Always kept within [RANDOM_LOT_MIN, RANDOM_LOT_MAX].
+    """
+    deficit = other_vol - own_vol
+    if deficit <= 0:
+        return config.RANDOM_LOT_MIN
+    target = int(deficit * config.BALANCE_FILL_RATIO)
+    return max(config.RANDOM_LOT_MIN, min(target, config.RANDOM_LOT_MAX))
+
+
 def _random_offset_ticks() -> int:
     """Random 1-5 (config range) ticks, randomly above (+) or below (-)."""
     magnitude = random.randint(config.RANDOM_TICKS_MIN, config.RANDOM_TICKS_MAX)
@@ -134,33 +162,36 @@ class StockBot:
         """Fetch stock price detail: current `price` + ARA/ARB limits, etc."""
         return self.client.get(config.PRICE_DETAIL_PATH.format(code=code))
 
+    def _price_detail_band(self, code: str) -> tuple:
+        """(current_price, ARB, ARA) from the price-detail API.
+
+        ARA/ARB ALWAYS come from here (`price_limit_lower`/`price_limit_upper`),
+        never env. If the call fails: (FALLBACK_PRICE, 0, 0) — 0 bands = no clamp.
+        """
+        try:
+            detail = self.get_price_detail(code)
+            d = detail.get("result") if isinstance(detail.get("result"), dict) else detail
+            return (
+                int(d.get("price") or config.FALLBACK_PRICE),
+                int(d.get("price_limit_lower") or 0),
+                int(d.get("price_limit_upper") or 0),
+            )
+        except ApiError:
+            return config.FALLBACK_PRICE, 0, 0
+
     def _price_and_band(self, code: str, orderbook: Any, side: str) -> tuple:
         """Return (reference_price, ARB, ARA) for a trade side.
 
         Reference is best ask (buy) / best bid (sell) from the order book, or the
-        price-detail `price` when that side is empty. ARA/ARB ALWAYS come from the
-        price-detail API (`price_limit_lower` / `price_limit_upper`) — never env.
+        price-detail `price` when that side is empty. ARA/ARB always come from the
+        price-detail API.
         """
         getter = _best_ask_price if side == "buy" else _best_bid_price
+        detail_price, arb, ara = self._price_detail_band(code)
         try:
             reference = getter(orderbook)
         except RuntimeError:
-            reference = None  # this side of the order book is empty
-
-        # ARA/ARB (and the reference when the book is empty) from price detail.
-        try:
-            detail = self.get_price_detail(code)
-            d = detail.get("result") if isinstance(detail.get("result"), dict) else detail
-            arb = int(d.get("price_limit_lower") or 0)
-            ara = int(d.get("price_limit_upper") or 0)
-            if reference is None:
-                reference = int(d.get("price") or config.FALLBACK_PRICE)
-        except ApiError:
-            # Price detail unavailable: no clamp, fall back for the reference.
-            arb, ara = 0, 0
-            if reference is None:
-                reference = config.FALLBACK_PRICE
-
+            reference = detail_price  # this side of the order book is empty
         return reference, arb, ara
 
     # -- portfolio ----------------------------------------------------------
@@ -493,6 +524,66 @@ class StockBot:
             "price": price,
             "response": self.place_sell(code, lot, price),
         }
+
+    # -- balanced random (used by --random --balance threads) ---------------
+    def _balanced_random(self, code: str, side: str) -> dict:
+        """One liquidity-providing order that nudges the book toward balance.
+
+        The order RESTS on its own side (buy at/below best bid, sell at/above
+        best ask — never crossing the spread, so it adds depth rather than
+        consuming the other side) and its lot is sized to how far this side
+        trails the other (see _balancing_lot). Run on both sides in parallel,
+        bid and ask depth converge while the mid price stays put.
+        """
+        orderbook = self.get_orderbook(code)
+        bid_vol = _side_volume(orderbook, "bid", config.BALANCE_DEPTH)
+        ask_vol = _side_volume(orderbook, "ask", config.BALANCE_DEPTH)
+        detail_price, arb, ara = self._price_detail_band(code)
+
+        if side == "buy":
+            own_vol, other_vol = bid_vol, ask_vol
+            try:
+                anchor = _best_bid_price(orderbook)
+            except RuntimeError:
+                anchor = detail_price  # empty bid side -> anchor on price detail
+            # 0..MAX ticks below the best bid: strictly bid-side depth.
+            offset = -random.randint(0, config.RANDOM_TICKS_MAX)
+        else:
+            own_vol, other_vol = ask_vol, bid_vol
+            try:
+                anchor = _best_ask_price(orderbook)
+            except RuntimeError:
+                anchor = detail_price  # empty ask side
+            # 0..MAX ticks above the best ask: strictly ask-side depth.
+            offset = random.randint(0, config.RANDOM_TICKS_MAX)
+
+        price = _clamp_price(add_ticks(anchor, offset), arb, ara)
+        lot = min(_balancing_lot(own_vol, other_vol), config.MAX_LOT_PER_ORDER)
+
+        response = (
+            self.buy(code, lot=lot, price=price)
+            if side == "buy"
+            else self.place_sell(code, lot, price)
+        )
+        return {
+            "side": "BUY" if side == "buy" else "SELL",
+            "code": code,
+            "reference": anchor,
+            "offset_ticks": offset,
+            "bid_vol": bid_vol,
+            "ask_vol": ask_vol,
+            "lot": lot,
+            "price": price,
+            "response": response,
+        }
+
+    def balanced_random_buy(self, code: str) -> dict:
+        """Add bid-side depth, sized to the bid/ask volume gap."""
+        return self._balanced_random(code, "buy")
+
+    def balanced_random_sell(self, code: str) -> dict:
+        """Add ask-side depth, sized to the ask/bid volume gap (tops up first)."""
+        return self._balanced_random(code, "sell")
 
     # -- trading actions ----------------------------------------------------
     # NOTE: buy() is implemented but intentionally NOT wired into the main flow.

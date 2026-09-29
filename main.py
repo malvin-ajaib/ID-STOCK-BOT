@@ -23,11 +23,15 @@ from src.bot import StockBot
 from src.client import ApiError
 
 
-def run_random_trading(code: str) -> int:
+def run_random_trading(code: str, balance: bool = False) -> int:
     """Random-order mode: buy (account 1) and sell (account 2) in parallel threads.
 
-    Each thread places one random order (±1-5 ticks off the reference, random
-    lot) every RANDOM_INTERVAL_SECONDS until interrupted (Ctrl+C).
+    Default: each thread places one random order (±1-5 ticks off the reference,
+    random lot) every RANDOM_INTERVAL_SECONDS until interrupted (Ctrl+C).
+
+    ``balance=True`` (--balance): each thread instead provides liquidity on its
+    own side, sizing the order to how far that side trails the other, so the
+    book's bid/ask depth converges toward balance.
     """
     buy_bot = StockBot(account=config.ACCOUNT_BUY)
     sell_bot = StockBot(account=config.ACCOUNT_SELL)
@@ -38,11 +42,15 @@ def run_random_trading(code: str) -> int:
         except ApiError as exc:
             print(f"[{label} login failed] {exc}", file=sys.stderr)
             return 1
+    mode = "Balanced random" if balance else "Random"
     print(
-        f"Random trading {code}: lot {config.RANDOM_LOT_MIN}-{config.RANDOM_LOT_MAX}, "
+        f"{mode} trading {code}: lot {config.RANDOM_LOT_MIN}-{config.RANDOM_LOT_MAX}, "
         f"±{config.RANDOM_TICKS_MIN}-{config.RANDOM_TICKS_MAX} ticks, every "
         f"{config.RANDOM_INTERVAL_SECONDS}s. Ctrl+C to stop.\n"
     )
+
+    buy_action = "balanced_random_buy" if balance else "random_buy"
+    sell_action = "balanced_random_sell" if balance else "random_sell"
 
     stop = threading.Event()
 
@@ -51,17 +59,20 @@ def run_random_trading(code: str) -> int:
         while not stop.is_set():
             try:
                 r = action(code)
+                extra = ""
+                if "bid_vol" in r:  # balanced mode reports current book depth
+                    extra = f"  [book bid {r['bid_vol']} / ask {r['ask_vol']}]"
                 print(
                     f"[{label}] {r['side']} {r['lot']} lot @ {r['price']} "
-                    f"(ref {r['reference']}, {r['offset_ticks']:+d} ticks)"
+                    f"(ref {r['reference']}, {r['offset_ticks']:+d} ticks){extra}"
                 )
             except Exception as exc:  # keep the thread alive on any error
                 print(f"[{label}] error: {exc}", file=sys.stderr)
             stop.wait(config.RANDOM_INTERVAL_SECONDS)
 
     threads = [
-        threading.Thread(target=loop, args=(buy_bot, "random_buy", "BUY"), daemon=True),
-        threading.Thread(target=loop, args=(sell_bot, "random_sell", "SELL"), daemon=True),
+        threading.Thread(target=loop, args=(buy_bot, buy_action, "BUY"), daemon=True),
+        threading.Thread(target=loop, args=(sell_bot, sell_action, "SELL"), daemon=True),
     ]
     for t in threads:
         t.start()
@@ -138,11 +149,17 @@ def main() -> int:
         action="store_true",
         help="Random mode: buy (acct 1) + sell (acct 2) random orders in parallel.",
     )
+    parser.add_argument(
+        "--balance",
+        action="store_true",
+        help="With --random: provide liquidity on each side, sized to the "
+        "bid/ask volume gap, so the order book converges toward balance.",
+    )
     args = parser.parse_args()
 
     # Random mode: parallel buy/sell threads, needs only the stock code.
     if args.random:
-        return run_random_trading(args.code)
+        return run_random_trading(args.code, balance=args.balance)
 
     # Account 1 (buy) or account 2 (sell), chosen by --side.
     account = config.account_for(args.side)

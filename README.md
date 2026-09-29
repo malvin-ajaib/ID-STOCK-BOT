@@ -42,6 +42,9 @@ python main.py --code BMRI --until 4000 --lot 5 --interval 0.5 --max-attempts 20
 # RANDOM mode: buy (acct 1) + sell (acct 2) random orders in parallel, until Ctrl+C
 python main.py --code BMRI --random
 
+# BALANCED random: same, but each side adds depth sized to the bid/ask gap
+python main.py --code BMRI --random --balance
+
 # Force a fresh login (all runs log in fresh anyway)
 python main.py --code BMRI --force-login
 
@@ -63,6 +66,7 @@ python main.py --help
 | `--interval` | 1.0 | until flow | Seconds between attempts |
 | `--max-attempts` | 100 | until flow | Order cap for the until loop |
 | `--random` | off | random mode | Parallel random buy+sell until Ctrl+C |
+| `--balance` | off | random mode | With `--random`: size each side to the bid/ask volume gap to balance the book |
 | `--force-login` | off | all | Re-authenticate explicitly |
 
 Functions not on the CLI (`get_all_orders`, `cancel_order`, `cancel_all_orders`,
@@ -191,6 +195,27 @@ AJAIB_RANDOM_INTERVAL_SECONDS=3
 
 Random sells still run the portfolio check + top-up, so the sell account is
 funded automatically.
+
+#### Balanced book (`--balance`)
+
+```bash
+python main.py --code BMRI --random --balance
+```
+
+Instead of firing blind, each thread becomes a **liquidity provider on its own
+side** (buy → bid, sell → ask) and sizes every order to how far that side trails
+the other. Two levers push the book toward balance:
+
+- **Lot = a fraction of the volume deficit.** If a side is light it gets large
+  top-ups; if it's already heavy it gets only a token `RANDOM_LOT_MIN` order.
+- **Orders always rest, never cross.** Buys post at/below the best bid, sells
+  at/above the best ask — adding depth rather than eating the other side, so the
+  mid price stays put while depth evens out.
+
+Each log line shows the live book depth (`[book bid <lot> / ask <lot>]`). Tune it
+with `AJAIB_BALANCE_DEPTH` (levels summed per side, default 5) and
+`AJAIB_BALANCE_FILL_RATIO` (fraction of the gap closed per order, default 0.5 —
+lower is gentler, higher is faster but choppier).
 
 ### Switch iOS ⇄ Android
 

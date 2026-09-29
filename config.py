@@ -118,6 +118,16 @@ RANDOM_INTERVAL_SECONDS = float(_get("AJAIB_RANDOM_INTERVAL_SECONDS", "3"))
 RANDOM_TICKS_MIN = int(_get("AJAIB_RANDOM_TICKS_MIN", "1"))
 RANDOM_TICKS_MAX = int(_get("AJAIB_RANDOM_TICKS_MAX", "5"))
 
+# --- Balanced random mode (--random --balance) -----------------------------
+# Each thread provides liquidity on its own side (buy -> bid, sell -> ask) and
+# sizes the order to how far that side trails the other, so depth converges.
+# BALANCE_DEPTH  = how many price levels per side to sum when measuring volume.
+# BALANCE_FILL_RATIO = fraction of the volume deficit to add per order (0-1);
+#   lower = gentler correction, higher = faster but choppier. Lot stays within
+#   [RANDOM_LOT_MIN, RANDOM_LOT_MAX].
+BALANCE_DEPTH = int(_get("AJAIB_BALANCE_DEPTH", "5"))
+BALANCE_FILL_RATIO = float(_get("AJAIB_BALANCE_FILL_RATIO", "0.5"))
+
 # --- Device / app identity headers -----------------------------------------
 # RULE: every header value is read from env, never hardcoded in code.
 # The active set is chosen by AJAIB_DEVICE_PROFILE (IOS or ANDROID).
