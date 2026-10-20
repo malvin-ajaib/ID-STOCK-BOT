@@ -39,6 +39,9 @@ python main.py --code BMRI --side sell --until 4000
 # UNTIL with fixed lot + faster polling + higher order cap
 python main.py --code BMRI --until 4000 --lot 5 --interval 0.5 --max-attempts 200
 
+# FILL the book from the current price to a target: sell up / buy down every tick
+python main.py --code BMRI --fill 4500
+
 # RANDOM mode: buy (acct 1) + sell (acct 2) random orders in parallel, until Ctrl+C
 python main.py --code BMRI --random
 
@@ -65,6 +68,7 @@ python main.py --help
 | `--until` | — | until flow | Target price; loop until market reaches it |
 | `--interval` | 1.0 | until flow | Seconds between attempts |
 | `--max-attempts` | 100 | until flow | Order cap for the until loop |
+| `--fill` | — | fill mode | Target price; rest an order at every tick from the current price to it (sell up / buy down). Direction + account automatic |
 | `--random` | off | random mode | Parallel random buy+sell until Ctrl+C |
 | `--balance` | off | random mode | With `--random`: size each side to the bid/ask volume gap to balance the book |
 | `--force-login` | off | all | Re-authenticate explicitly |
@@ -173,6 +177,32 @@ when the market reaches the target or after `--max-attempts` orders (safety cap)
 In `--until` mode, **`--lot` defaults to the volume sitting at the best ask (buy) /
 best bid (sell)** each iteration — so one order clears one price level and the book
 walks toward the target. Pass `--lot N` to force a fixed size instead.
+
+### Fill the book between the current price and a target (`--fill`)
+
+```bash
+python main.py --code BMRI --fill 4500
+```
+
+Rests one order at **every tick** between the current price (from the price-detail
+API) and the target, populating one side of the book:
+
+- **Current price *below* the target → SELL up** (account 2): a sell at every tick
+  from one tick above the current price up to the target — filling the **ask** side.
+- **Current price *above* the target → BUY down** (account 1): a buy at every tick
+  from one tick below the current price down to the target — filling the **bid** side.
+
+The direction (and which account places the orders) is decided automatically from
+the current price, so `--side` is ignored here. Each order is a **random lot in
+10000–20000**. The target is clamped to the ARA/ARB band (a target beyond the band
+fills only up to the band edge), and the walk is capped at `AJAIB_FILL_MAX_ORDERS`
+(default 1000) as a safety limit. Sells still run the portfolio check + top-up.
+
+```
+AJAIB_FILL_LOT_MIN=10000
+AJAIB_FILL_LOT_MAX=20000
+AJAIB_FILL_MAX_ORDERS=1000
+```
 
 ### Random mode (buy + sell in parallel)
 

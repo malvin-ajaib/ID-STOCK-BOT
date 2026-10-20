@@ -88,6 +88,57 @@ def run_random_trading(code: str, balance: bool = False) -> int:
     return 0
 
 
+def run_fill(code: str, fill_price: int) -> int:
+    """Fill one side of the order book tick-by-tick toward ``fill_price``.
+
+    Direction is decided from the current price (price-detail API):
+      current < fill -> SELL at every tick up to fill   (account 2, fills asks)
+      current > fill -> BUY  at every tick down to fill  (account 1, fills bids)
+
+    Each order is a random lot in [FILL_LOT_MIN, FILL_LOT_MAX].
+    """
+    # Probe the current price on account 1 (price detail is read-only, so the
+    # account doesn't matter for the direction decision).
+    probe = StockBot(account=config.ACCOUNT_BUY)
+    try:
+        probe.boot()
+    except ApiError as exc:
+        print(f"[login failed] {exc}", file=sys.stderr)
+        return 1
+
+    current = probe.current_price(code)
+    if fill_price == current:
+        print(f"{code}: current price {current} already at fill {fill_price}; nothing to do.")
+        return 0
+
+    # Buy uses account 1 (reuse the probe); sell uses account 2.
+    side = "sell" if fill_price > current else "buy"
+    bot = probe if side == "buy" else StockBot(account=config.ACCOUNT_SELL)
+    if bot is not probe:
+        try:
+            bot.boot()
+        except ApiError as exc:
+            print(f"[{side} login failed] {exc}", file=sys.stderr)
+            return 1
+
+    print(
+        f"{code}: current {current} -> fill {fill_price}: {side.upper()} at every "
+        f"tick, lot {config.FILL_LOT_MIN}-{config.FILL_LOT_MAX}.\n"
+    )
+    try:
+        result = bot.fill_orderbook(code, fill_price, side=side)
+    except ApiError as exc:
+        print(f"[fill failed] {exc}", file=sys.stderr)
+        print(f"  response body: {exc.body}", file=sys.stderr)
+        return 1
+
+    print(
+        f"\n{code}: filled {result['side']} from {result['current']} to "
+        f"{result['fill_price']} with {result['orders_placed']} order(s)."
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ID stock automation bot")
     parser.add_argument(
@@ -145,6 +196,14 @@ def main() -> int:
         help="Max orders to place in --until mode (default: 100).",
     )
     parser.add_argument(
+        "--fill",
+        type=int,
+        default=None,
+        help="Fill the order book from the current price to this price: SELL at "
+        "every tick up (current < fill) or BUY at every tick down (current > "
+        "fill), random lot 10000-20000. Direction (and account) is automatic.",
+    )
+    parser.add_argument(
         "--random",
         action="store_true",
         help="Random mode: buy (acct 1) + sell (acct 2) random orders in parallel.",
@@ -156,6 +215,11 @@ def main() -> int:
         "bid/ask volume gap, so the order book converges toward balance.",
     )
     args = parser.parse_args()
+
+    # Fill mode: walk the book tick-by-tick toward a target price. Direction and
+    # account are decided from the current price, so it needs only code + target.
+    if args.fill is not None:
+        return run_fill(args.code, args.fill)
 
     # Random mode: parallel buy/sell threads, needs only the stock code.
     if args.random:

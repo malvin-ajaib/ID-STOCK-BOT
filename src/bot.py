@@ -127,6 +127,11 @@ def _random_lot() -> int:
     return random.randint(config.RANDOM_LOT_MIN, config.RANDOM_LOT_MAX)
 
 
+def _fill_lot() -> int:
+    """Random lot in the configured fill range [FILL_LOT_MIN, FILL_LOT_MAX]."""
+    return random.randint(config.FILL_LOT_MIN, config.FILL_LOT_MAX)
+
+
 class StockBot:
     def __init__(self, account: dict | None = None):
         self.account = account if account is not None else config.ACCOUNT_BUY
@@ -178,6 +183,11 @@ class StockBot:
             )
         except ApiError:
             return config.FALLBACK_PRICE, 0, 0
+
+    def current_price(self, code: str) -> int:
+        """Current market price from the price-detail API (FALLBACK_PRICE on failure)."""
+        price, _arb, _ara = self._price_detail_band(code)
+        return price
 
     def _price_and_band(self, code: str, orderbook: Any, side: str) -> tuple:
         """Return (reference_price, ARB, ARA) for a trade side.
@@ -487,6 +497,64 @@ class StockBot:
             "reached": reached,
             "orders_placed": len(attempts),
             "attempts": attempts,
+        }
+
+    def fill_orderbook(
+        self,
+        code: str,
+        fill_price: int,
+        side: str,
+        *,
+        max_orders: int | None = None,
+    ) -> dict:
+        """Rest one order at every tick between the current price and ``fill_price``.
+
+        ``side='sell'`` walks UP from one tick above the current price to
+        ``fill_price``, placing a sell at each tick (populating the ask side);
+        ``side='buy'`` walks DOWN from one tick below the current price to
+        ``fill_price``, placing a buy at each tick (populating the bid side).
+
+        Each order uses a random lot in [FILL_LOT_MIN, FILL_LOT_MAX] (capped at
+        MAX_LOT_PER_ORDER). ``fill_price`` is clamped to the ARA/ARB band, so a
+        target beyond the band fills only up to the band edge. The walk stops at
+        the (clamped) target or after ``max_orders`` orders (config.FILL_MAX_ORDERS).
+
+        Sells go through place_sell (portfolio top-up guard); buys through buy().
+        """
+        if max_orders is None:
+            max_orders = config.FILL_MAX_ORDERS
+
+        current, arb, ara = self._price_detail_band(code)
+        target = _clamp_price(fill_price, arb, ara)
+        step = 1 if side == "sell" else -1
+
+        orders: list = []
+        price = add_ticks(current, step)  # start one tick off the current price
+        for _ in range(max_orders):
+            past_target = price > target if side == "sell" else price < target
+            if past_target:
+                break
+
+            lot = min(_fill_lot(), config.MAX_LOT_PER_ORDER)
+            if side == "sell":
+                response = self.place_sell(code, lot, price)
+            else:
+                response = self.buy(code, lot=lot, price=price)
+            orders.append({"price": price, "lot": lot, "response": response})
+            print(f"{code}: fill {side} {lot} lot @ {price} (order {len(orders)})")
+
+            nxt = add_ticks(price, step)
+            if nxt == price:  # band edge: price can't move further
+                break
+            price = nxt
+
+        return {
+            "code": code,
+            "side": side.upper(),
+            "current": current,
+            "fill_price": target,
+            "orders_placed": len(orders),
+            "orders": orders,
         }
 
     # -- random single orders (used by --random threads) --------------------

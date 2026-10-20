@@ -128,6 +128,15 @@ RANDOM_TICKS_MAX = int(_get("AJAIB_RANDOM_TICKS_MAX", "5"))
 BALANCE_DEPTH = int(_get("AJAIB_BALANCE_DEPTH", "5"))
 BALANCE_FILL_RATIO = float(_get("AJAIB_BALANCE_FILL_RATIO", "0.5"))
 
+# --- Fill mode (--fill PRICE) ----------------------------------------------
+# Walk tick-by-tick between the current price and the target, resting one order
+# at every tick to populate the book: SELL up when current < target, BUY down
+# when current > target. Each order gets a random lot in [FILL_LOT_MIN, MAX].
+# FILL_MAX_ORDERS caps the walk so a wide band can't place unbounded orders.
+FILL_LOT_MIN = int(_get("AJAIB_FILL_LOT_MIN", "10000"))
+FILL_LOT_MAX = int(_get("AJAIB_FILL_LOT_MAX", "20000"))
+FILL_MAX_ORDERS = int(_get("AJAIB_FILL_MAX_ORDERS", "1000"))
+
 # --- Device / app identity headers -----------------------------------------
 # RULE: every header value is read from env, never hardcoded in code.
 # The active set is chosen by AJAIB_DEVICE_PROFILE (IOS or ANDROID).
