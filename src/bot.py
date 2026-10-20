@@ -88,6 +88,23 @@ def _clamp_price(price: int, arb: int, ara: int) -> int:
     return price
 
 
+def _can_trade_into(orderbook: Any, side: str, price: int) -> bool:
+    """Would a ``side`` order at ``price`` find resting volume to match?
+
+    A buy needs an ask priced at/below ``price``; a sell needs a bid priced
+    at/above it. False when that side of the book is empty — the signal that a
+    counter order must be seeded first so the price can actually move.
+    """
+    trade_side = "ask" if side == "buy" else "bid"
+    try:
+        levels = _side_levels(orderbook, trade_side)
+    except RuntimeError:
+        return False
+    if side == "buy":
+        return any(int(lv["price"]) <= price for lv in levels)
+    return any(int(lv["price"]) >= price for lv in levels)
+
+
 def _side_volume(orderbook: Any, side: str, depth: int) -> int:
     """Total lot on one side of the book over its top ``depth`` levels.
 
@@ -367,54 +384,103 @@ class StockBot:
             "order_response": self.buy(code, lot=lot, price=target_price),
         }
 
-    def buy_until_price(
+    def _until(
         self,
         code: str,
         target_price: int,
+        side: str,
         lot: int | None = None,
         *,
         poll_interval: float = 1.0,
         max_attempts: int = 100,
+        max_ticks: int | None = None,
+        counter_bot: "StockBot | None" = None,
     ) -> dict:
-        """Keep placing limit buys at ``target_price`` until the market reaches it.
+        """Walk the price toward ``target_price``, consuming the book level by level.
 
-        Each loop reads the order book; while the best ask is still below
-        ``target_price`` it places a limit buy at ``target_price`` (which lifts
-        the book toward the target), waits ``poll_interval`` seconds, and checks
-        again. Stops when the best ask has reached ``target_price`` or after
-        ``max_attempts`` orders (safety cap).
+        Each loop reads the order book and places one order on our side:
 
-        If the ask side of the book is empty, the reference and the ARA/ARB band
-        come from the price-detail API (same as the tick/random flows). The
-        target price is clamped to that band, and ``lot`` (when auto) falls back
-        to config.FALLBACK_LOT since there is no level volume to read.
+        * **Liquid book** — when there is a touch level to trade into, the order
+          is priced AT the best bid (sell) / best ask (buy). That consumes the
+          touch level, the price walks one level toward the target, and because
+          the order sits at the current price it can never trip the exchange's
+          max-tick rule. This repeats, walking tick by tick, until the touch
+          reaches the target.
+        * **Empty side** — with nothing to trade into, a move has to be
+          manufactured: step the price toward the target by at most ``max_ticks``
+          (default config.UNTIL_MAX_TICKS, the exchange's limit from the current
+          price), place a COUNTER order on ``counter_bot`` (the opposite account)
+          at that step price — a resting ask for a buy, a resting bid for a sell
+          — then trade into it so the price actually moves there.
 
-        ``lot`` defaults to the volume sitting at the best ask each iteration
-        (so one order clears one price level); pass a number to force a fixed lot.
+        Stops when the reference reaches the target or after ``max_attempts``
+        orders. ``lot`` defaults to the volume at the best level each iteration
+        (config.FALLBACK_LOT on an empty side); pass a number to fix it.
         """
+        if max_ticks is None:
+            max_ticks = config.UNTIL_MAX_TICKS
+        is_buy = side == "buy"
+        step_sign = max_ticks if is_buy else -max_ticks
+
         attempts: list = []
         reached = False
 
         for _ in range(max_attempts):
             orderbook = self.get_orderbook(code)
-            best_ask, arb, ara = self._price_and_band(code, orderbook, "buy")
-            price = _clamp_price(target_price, arb, ara)
-            if best_ask >= price:
+            reference, arb, ara = self._price_and_band(code, orderbook, side)
+            target = _clamp_price(target_price, arb, ara)
+            if (reference >= target) if is_buy else (reference <= target):
                 reached = True
                 break
 
-            order_lot = lot if lot is not None else _auto_lot(orderbook, "buy")
+            order_lot = lot if lot is not None else _auto_lot(orderbook, side)
             order_lot = min(order_lot, config.MAX_LOT_PER_ORDER)
-            response = self.buy(code, lot=order_lot, price=price)
-            attempts.append({"best_ask": best_ask, "lot": order_lot, "response": response})
+
+            if _can_trade_into(orderbook, side, reference):
+                # A touch level exists — order AT it (best bid/ask) to consume it
+                # and walk the price one level toward the target.
+                step_price = _clamp_price(reference, arb, ara)
+                seeded = False
+            else:
+                # Empty side — step up to max_ticks toward the target and seed a
+                # counter order on the opposite account so the trade can print.
+                step_price = add_ticks(reference, step_sign)
+                step_price = min(step_price, target) if is_buy else max(step_price, target)
+                step_price = _clamp_price(step_price, arb, ara)
+                seeded = counter_bot is not None
+                if seeded:
+                    if is_buy:
+                        counter_bot.place_sell(code, order_lot, step_price)  # resting ask
+                    else:
+                        counter_bot.buy(code, lot=order_lot, price=step_price)  # resting bid
+
+            if is_buy:
+                response = self.buy(code, lot=order_lot, price=step_price)
+            else:
+                response = self.place_sell(code, order_lot, step_price)
+
+            attempts.append({
+                "reference": reference,
+                "step_price": step_price,
+                "lot": order_lot,
+                "seeded_counter": seeded,
+                "response": response,
+            })
+            touch_label, cmp, verb = (
+                ("best ask", "<", "buy") if is_buy else ("best bid", ">", "sell")
+            )
+            # On an empty side the reference is the last/detail price, not a quote.
+            ref_label = "last" if seeded else touch_label
+            note = " (seeded counter)" if seeded else ""
             print(
-                f"{code}: best ask {best_ask} < target {price} "
-                f"-> bought {order_lot} lot @ {price} (attempt {len(attempts)})"
+                f"{code}: {ref_label} {reference} {cmp} target {target} -> {verb} "
+                f"{order_lot} lot @ {step_price}{note} (attempt {len(attempts)})"
             )
             time.sleep(poll_interval)
         else:
-            best_ask, arb, ara = self._price_and_band(code, self.get_orderbook(code), "buy")
-            reached = best_ask >= _clamp_price(target_price, arb, ara)
+            reference, arb, ara = self._price_and_band(code, self.get_orderbook(code), side)
+            target = _clamp_price(target_price, arb, ara)
+            reached = (reference >= target) if is_buy else (reference <= target)
 
         return {
             "code": code,
@@ -423,6 +489,29 @@ class StockBot:
             "orders_placed": len(attempts),
             "attempts": attempts,
         }
+
+    def buy_until_price(
+        self,
+        code: str,
+        target_price: int,
+        lot: int | None = None,
+        *,
+        poll_interval: float = 1.0,
+        max_attempts: int = 100,
+        max_ticks: int | None = None,
+        counter_bot: "StockBot | None" = None,
+    ) -> dict:
+        """Lift the best ask to ``target_price``, stepping at most max_ticks/order.
+
+        Thin wrapper over _until(side="buy"). See _until for the stepping and
+        counter-order behavior. ``counter_bot`` should be the SELL account so a
+        resting ask can be seeded when the ask side is empty.
+        """
+        return self._until(
+            code, target_price, "buy", lot,
+            poll_interval=poll_interval, max_attempts=max_attempts,
+            max_ticks=max_ticks, counter_bot=counter_bot,
+        )
 
     def sell_ticks_below_bid(self, code: str, lot: int, ticks: int = 5) -> dict:
         """Order book -> best bid -> -N ticks -> sell at that price.
@@ -450,54 +539,20 @@ class StockBot:
         *,
         poll_interval: float = 1.0,
         max_attempts: int = 100,
+        max_ticks: int | None = None,
+        counter_bot: "StockBot | None" = None,
     ) -> dict:
-        """Keep placing limit sells at ``target_price`` until the market reaches it.
+        """Push the best bid down to ``target_price``, stepping at most max_ticks/order.
 
-        Mirror of buy_until_price. Each loop reads the order book; while the best
-        bid is still above ``target_price`` it places a limit sell at
-        ``target_price`` (which pushes the book down toward the target), waits
-        ``poll_interval`` seconds, and checks again. Stops when the best bid has
-        dropped to ``target_price`` or after ``max_attempts`` orders (safety cap).
-
-        If the bid side of the book is empty, the reference and the ARA/ARB band
-        come from the price-detail API (same as the tick/random flows). The
-        target price is clamped to that band, and ``lot`` (when auto) falls back
-        to config.FALLBACK_LOT since there is no level volume to read.
-
-        ``lot`` defaults to the volume sitting at the best bid each iteration
-        (so one order clears one price level); pass a number to force a fixed lot.
+        Thin wrapper over _until(side="sell"). See _until for the stepping and
+        counter-order behavior. ``counter_bot`` should be the BUY account so a
+        resting bid can be seeded when the bid side is empty.
         """
-        attempts: list = []
-        reached = False
-
-        for _ in range(max_attempts):
-            orderbook = self.get_orderbook(code)
-            best_bid, arb, ara = self._price_and_band(code, orderbook, "sell")
-            price = _clamp_price(target_price, arb, ara)
-            if best_bid <= price:
-                reached = True
-                break
-
-            order_lot = lot if lot is not None else _auto_lot(orderbook, "sell")
-            order_lot = min(order_lot, config.MAX_LOT_PER_ORDER)
-            response = self.place_sell(code, order_lot, price)
-            attempts.append({"best_bid": best_bid, "lot": order_lot, "response": response})
-            print(
-                f"{code}: best bid {best_bid} > target {price} "
-                f"-> sold {order_lot} lot @ {price} (attempt {len(attempts)})"
-            )
-            time.sleep(poll_interval)
-        else:
-            best_bid, arb, ara = self._price_and_band(code, self.get_orderbook(code), "sell")
-            reached = best_bid <= _clamp_price(target_price, arb, ara)
-
-        return {
-            "code": code,
-            "target_price": target_price,
-            "reached": reached,
-            "orders_placed": len(attempts),
-            "attempts": attempts,
-        }
+        return self._until(
+            code, target_price, "sell", lot,
+            poll_interval=poll_interval, max_attempts=max_attempts,
+            max_ticks=max_ticks, counter_bot=counter_bot,
+        )
 
     def fill_orderbook(
         self,

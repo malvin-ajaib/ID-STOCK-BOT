@@ -88,6 +88,83 @@ def run_random_trading(code: str, balance: bool = False) -> int:
     return 0
 
 
+def run_until(
+    code: str,
+    target: int,
+    lot: int | None,
+    poll_interval: float,
+    max_attempts: int,
+) -> int:
+    """Move the market price to ``target``, picking the direction automatically.
+
+    Direction is decided from the current price (price-detail API):
+      target > current -> BUY-until  (lift the ask up to target; account 1,
+                                       counter asks seeded from account 2)
+      target < current -> SELL-until (push the bid down to target; account 2,
+                                       counter bids seeded from account 1)
+
+    The loop steps the price in <=UNTIL_MAX_TICKS-tick orders and seeds a counter
+    order on the other account when the side it must trade into is empty.
+    """
+    # Probe the current price on account 1 (price detail is read-only).
+    probe = StockBot(account=config.ACCOUNT_BUY)
+    try:
+        probe.boot()
+    except ApiError as exc:
+        print(f"[login failed] {exc}", file=sys.stderr)
+        print(f"  response body: {exc.body}", file=sys.stderr)
+        return 1
+
+    current = probe.current_price(code)
+    if target == current:
+        print(f"{code}: current price {current} already at target {target}; nothing to do.")
+        return 0
+
+    side = "buy" if target > current else "sell"
+    # Buy trades on account 1 (reuse probe) and seeds asks from account 2;
+    # sell trades on account 2 and seeds bids from account 1 (reuse probe).
+    if side == "buy":
+        bot = probe
+        counter_bot = StockBot(account=config.ACCOUNT_SELL)
+    else:
+        bot = StockBot(account=config.ACCOUNT_SELL)
+        counter_bot = probe
+    for other in (bot, counter_bot):
+        if other is not probe:
+            try:
+                other.boot()
+            except ApiError as exc:
+                print(f"[{side}-until login failed] {exc}", file=sys.stderr)
+                print(f"  response body: {exc.body}", file=sys.stderr)
+                return 1
+
+    print(
+        f"{code}: current {current} -> target {target}: {side.upper()}-until "
+        f"(steps of <={config.UNTIL_MAX_TICKS} ticks, counter orders as needed).\n"
+    )
+    until_fn = bot.buy_until_price if side == "buy" else bot.sell_until_price
+    try:
+        result = until_fn(
+            code,
+            target_price=target,
+            lot=lot,  # None -> use best ask/bid volume each iteration
+            poll_interval=poll_interval,
+            max_attempts=max_attempts,
+            counter_bot=counter_bot,
+        )
+    except ApiError as exc:
+        print(f"[{side}-until failed] {exc}", file=sys.stderr)
+        print(f"  response body: {exc.body}", file=sys.stderr)
+        return 1
+
+    status = "reached" if result["reached"] else "NOT reached (cap hit)"
+    print(
+        f"\n{code}: {side} target {result['target_price']} {status} after "
+        f"{result['orders_placed']} order(s)."
+    )
+    return 0
+
+
 def run_fill(code: str, fill_price: int) -> int:
     """Fill one side of the order book tick-by-tick toward ``fill_price``.
 
@@ -155,7 +232,8 @@ def main() -> int:
         "--side",
         choices=["buy", "sell"],
         default="buy",
-        help="buy = N ticks above best ask; sell = N ticks below best bid.",
+        help="buy = N ticks above best ask; sell = N ticks below best bid. "
+        "Not used by --until (it auto-decides buy/sell from the current price).",
     )
     parser.add_argument(
         "--lot",
@@ -181,7 +259,8 @@ def main() -> int:
         "--until",
         type=int,
         default=None,
-        help="Target price: keep trading at this price until the market reaches it.",
+        help="Target price: move the market to it. Direction is automatic — buy "
+        "up if the target is above the current price, sell down if below.",
     )
     parser.add_argument(
         "--interval",
@@ -215,6 +294,13 @@ def main() -> int:
         "bid/ask volume gap, so the order book converges toward balance.",
     )
     args = parser.parse_args()
+
+    # Until mode: move the price to a target. Direction (buy up / sell down) and
+    # the accounts are decided from the current price, so --side is not used.
+    if args.until is not None:
+        return run_until(
+            args.code, args.until, args.lot, args.interval, args.max_attempts
+        )
 
     # Fill mode: walk the book tick-by-tick toward a target price. Direction and
     # account are decided from the current price, so it needs only code + target.
@@ -255,29 +341,6 @@ def main() -> int:
     #     print(f"  response body: {exc.body}", file=sys.stderr)
     #     return 1
     # return 0
-
-    # --- keep trading until target price is reached ----------------------
-    if args.until is not None:
-        until_fn = bot.buy_until_price if args.side == "buy" else bot.sell_until_price
-        try:
-            result = until_fn(
-                code,
-                target_price=args.until,
-                lot=args.lot,  # None -> use best ask/bid volume each iteration
-                poll_interval=args.interval,
-                max_attempts=args.max_attempts,
-            )
-        except ApiError as exc:
-            print(f"[{args.side}-until failed] {exc}", file=sys.stderr)
-            print(f"  response body: {exc.body}", file=sys.stderr)
-            return 1
-
-        status = "reached" if result["reached"] else "NOT reached (cap hit)"
-        print(
-            f"\n{code}: {args.side} target {result['target_price']} {status} after "
-            f"{result['orders_placed']} order(s)."
-        )
-        return 0
 
     # --- exact price: one order at --price with --lot ---------------------
     if args.price is not None:

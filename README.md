@@ -29,12 +29,9 @@ python main.py --code BMRI --price 4300 --lot 2
 # SELL at an EXACT price + lot (tops up account 2 if short)
 python main.py --code BMRI --side sell --price 4300 --lot 2
 
-# BUY UNTIL price reached: keep buying at 4000 until best ask hits 4000
-#   (lot omitted -> uses the volume at the best ask each step)
+# UNTIL: move the market to 4000 — buys up or sells down automatically (no --side)
+#   (lot omitted -> uses the volume at the best level each step)
 python main.py --code BMRI --until 4000
-
-# SELL UNTIL price reached: keep selling at 4000 until best bid drops to 4000
-python main.py --code BMRI --side sell --until 4000
 
 # UNTIL with fixed lot + faster polling + higher order cap
 python main.py --code BMRI --until 4000 --lot 5 --interval 0.5 --max-attempts 200
@@ -61,11 +58,11 @@ python main.py --help
 | Flag | Default | Applies to | Meaning |
 |------|---------|-----------|---------|
 | `--code` | `AJAIB_STOCK_CODE` | all | Stock code to trade |
-| `--side` | `buy` | ticks / until | `buy` (acct 1) or `sell` (acct 2) |
+| `--side` | `buy` | ticks / exact | `buy` (acct 1) or `sell` (acct 2). Ignored by `--until` (auto) |
 | `--lot` | 1 (ticks) / auto (until) | ticks / until | Lots per order; until auto = best level volume |
 | `--ticks` | 5 | ticks flow | Ticks above ask / below bid |
 | `--price` | — | exact flow | Place ONE order at this exact price |
-| `--until` | — | until flow | Target price; loop until market reaches it |
+| `--until` | — | until flow | Target price; move the market to it (buy up / sell down, auto) |
 | `--interval` | 1.0 | until flow | Seconds between attempts |
 | `--max-attempts` | 100 | until flow | Order cap for the until loop |
 | `--fill` | — | fill mode | Target price; rest an order at every tick from the current price to it (sell up / buy down). Direction + account automatic |
@@ -158,25 +155,42 @@ If `--code` is omitted it falls back to `AJAIB_STOCK_CODE`.
 
 ### Keep trading until a target price is reached
 
-Repeatedly place limit orders at a target price until the market reaches it
-(useful for driving/observing order matching in the test env):
+Move the market to a target price (useful for driving/observing order matching in
+the test env). **The direction is automatic** — no `--side` needed: if the target
+is **above** the current price it buys the book up; if **below**, it sells the book
+down (equal → nothing to do).
 
 ```bash
-# keep BUYING BMRI at 4000 until the best ask reaches 4000
+# drive BMRI to 4000 — buys up or sells down automatically
 python main.py --code BMRI --until 4000
-# keep SELLING BMRI at 4000 until the best bid drops to 4000
-python main.py --code BMRI --side sell --until 4000
 python main.py --code BMRI --until 4000 --lot 2 --interval 0.5 --max-attempts 200
 ```
 
-Each loop reads the order book. **Buy:** while the best ask is *below* the target,
-it keeps buying at the target (lifting the book up). **Sell:** while the best bid is
-*above* the target, it keeps selling at the target (pushing the book down). Stops
-when the market reaches the target or after `--max-attempts` orders (safety cap).
+Each loop reads the order book and places one order on our side, walking the price
+toward the target **level by level**:
+
+- **Liquid book — order at the touch.** The order is priced **at the best bid**
+  (selling down) / **best ask** (buying up), consuming that level so the price moves
+  one step toward the target. Because the order sits at the current price it never
+  trips the exchange's max-tick rule, so you'll see e.g. `sell … @ 1025` when the
+  best bid is 1025 — not an order jumped away from the market.
+- **Empty side — step + counter order.** A sell can only push the price down if
+  there are bids to trade into (a buy, asks to trade through). When that side is
+  empty, there's nothing to consume, so `--until` steps toward the target by at most
+  `AJAIB_UNTIL_MAX_TICKS` (default **10**) ticks — the exchange's limit from the
+  current price — places a **counter order on the other account** (a resting bid for
+  a sell, ask for a buy) at that step price, then trades into it so a trade prints
+  and the price moves there. This uses **both accounts**: sell-until trades on
+  account 2 and seeds bids from account 1; buy-until trades on account 1 and seeds
+  asks from account 2.
+
+Stops when the market reaches the target or after `--max-attempts` orders (safety
+cap) — a deep book walked one level at a time can need many orders, so raise
+`--max-attempts` for a long walk.
 
 In `--until` mode, **`--lot` defaults to the volume sitting at the best ask (buy) /
-best bid (sell)** each iteration — so one order clears one price level and the book
-walks toward the target. Pass `--lot N` to force a fixed size instead.
+best bid (sell)** each iteration (falling back to `AJAIB_FALLBACK_LOT` on an empty
+side). Pass `--lot N` to force a fixed size instead.
 
 ### Fill the book between the current price and a target (`--fill`)
 

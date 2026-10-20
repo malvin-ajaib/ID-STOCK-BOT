@@ -109,6 +109,11 @@ FALLBACK_LOT = int(_get("AJAIB_FALLBACK_LOT", "1000"))
 # best-level volume is split across multiple orders capped at this value.
 MAX_LOT_PER_ORDER = int(_get("AJAIB_MAX_LOT_PER_ORDER", "50000"))
 
+# --until: the exchange rejects an order priced more than this many ticks from
+# the current price, so the until loop can't jump straight to a far target. It
+# walks the price in steps of at most this many ticks toward the target instead.
+UNTIL_MAX_TICKS = int(_get("AJAIB_UNTIL_MAX_TICKS", "10"))
+
 # --- Random trading mode (--random) ----------------------------------------
 # Each order: a random 1-5 ticks above OR below the reference price, a random
 # lot in [MIN, MAX], repeated every INTERVAL seconds (buy + sell in parallel).
