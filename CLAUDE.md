@@ -84,8 +84,13 @@ The final price is clamped by `_clamp_price(price, arb, ara)` to `[ARB, ARA]`
 (ARB = Auto Reject Bawah/lower, ARA = Auto Reject Atas/upper; 0 = that bound off).
 
 ### Exact price order
-`--price N` places ONE order at exactly N with `--lot` (default 1) on `--side`.
-Buy calls `buy()` directly; sell runs `ensure_sellable_lot` then `sell()`.
+`--price N` places `--lot` (default 1) at exactly N on `--side` via
+`place_chunked()`: lots above `config.MAX_LOT_PER_ORDER` (50000, the exchange's
+per-order limit) are split into <=50000 chunks. Buy chunks call `buy()`; sell
+chunks go through `place_sell()` (portfolio check / top-up / retry). A chunk that
+fails (ApiError) is retried `CHUNK_RETRIES` times (default 3,
+`CHUNK_RETRY_DELAY_SECONDS` apart) before the run stops and reports the chunks
+already placed.
 
 ### Buy until target price
 `buy_until_price(code, target_price, lot=None, poll_interval=1.0, max_attempts=100)`:

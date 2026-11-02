@@ -61,7 +61,7 @@ python main.py --help
 | `--side` | `buy` | ticks / exact | `buy` (acct 1) or `sell` (acct 2). Ignored by `--until` (auto) |
 | `--lot` | 1 (ticks) / auto (until) | ticks / until | Lots per order; until auto = best level volume |
 | `--ticks` | 5 | ticks flow | Ticks above ask / below bid |
-| `--price` | — | exact flow | Place ONE order at this exact price |
+| `--price` | — | exact flow | Place `--lot` at this exact price. Above `AJAIB_MAX_LOT_PER_ORDER` (50000) it's auto-split, e.g. `--lot 120000` → 50000 + 50000 + 20000; a failed chunk is retried 3× (`AJAIB_CHUNK_RETRIES`) before stopping |
 | `--until` | — | until flow | Target price; move the market to it (buy up / sell down, auto) |
 | `--interval` | 1.0 | until flow | Seconds between attempts |
 | `--max-attempts` | 100 | until flow | Order cap for the until loop |

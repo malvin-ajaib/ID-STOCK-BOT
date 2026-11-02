@@ -342,23 +342,35 @@ def main() -> int:
     #     return 1
     # return 0
 
-    # --- exact price: one order at --price with --lot ---------------------
+    # --- exact price: --lot at --price, chunked into <=MAX_LOT_PER_ORDER -----
     if args.price is not None:
         lot = args.lot if args.lot is not None else 1
         try:
-            if args.side == "buy":
-                response = bot.buy(code, lot=lot, price=args.price)
-            else:
-                # Guarded sell: tops up / injects liquidity + retries on failure.
-                response = bot.place_sell(code, lot, args.price)
+            # Sells go through place_sell (top-up / liquidity retry) per chunk.
+            placed = bot.place_chunked(code, args.side, lot, args.price)
         except ApiError as exc:
+            done = getattr(exc, "chunks_done", [])
             print(f"[{args.side} failed] {exc}", file=sys.stderr)
             print(f"  response body: {exc.body}", file=sys.stderr)
+            if done:
+                print(
+                    f"  {len(done)} chunk(s) already placed "
+                    f"({sum(c['lot'] for c in done)} lot) before the failure.",
+                    file=sys.stderr,
+                )
             return 1
 
         print(f"\n{code}: {args.side} {lot} lot @ {args.price} (exact price)")
-        print("Order sent. Response:")
-        print(json.dumps(response, indent=2, ensure_ascii=False))
+        if len(placed) == 1:
+            print("Order sent. Response:")
+            print(json.dumps(placed[0]["response"], indent=2, ensure_ascii=False))
+        else:
+            print(
+                f"Sent as {len(placed)} orders "
+                f"({' + '.join(str(c['lot']) for c in placed)}) — max "
+                f"{config.MAX_LOT_PER_ORDER} lot per order. Responses:"
+            )
+            print(json.dumps([c["response"] for c in placed], indent=2, ensure_ascii=False))
         return 0
 
     # --- ticks flow: order book -> best ask/bid -> +/-N ticks -> order ----

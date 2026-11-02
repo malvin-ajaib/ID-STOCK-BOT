@@ -109,6 +109,11 @@ FALLBACK_LOT = int(_get("AJAIB_FALLBACK_LOT", "1000"))
 # best-level volume is split across multiple orders capped at this value.
 MAX_LOT_PER_ORDER = int(_get("AJAIB_MAX_LOT_PER_ORDER", "50000"))
 
+# --price chunking: a chunk that fails is retried this many times, this many
+# seconds apart, before the run stops.
+CHUNK_RETRIES = int(_get("AJAIB_CHUNK_RETRIES", "3"))
+CHUNK_RETRY_DELAY_SECONDS = float(_get("AJAIB_CHUNK_RETRY_DELAY_SECONDS", "1"))
+
 # --until: every move order is (volume it trades through) + this many lots. The
 # extra lots don't match, so they stay resting at the price just reached and the
 # book behind the moving price is never left empty.

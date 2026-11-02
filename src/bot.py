@@ -303,6 +303,45 @@ class StockBot:
                 time.sleep(config.LIQUIDITY_RETRY_DELAY_SECONDS)
             return self.sell(code, lot=lot, price=price)
 
+    def place_chunked(self, code: str, side: str, lot: int, price: int) -> list:
+        """Place ``lot`` @ ``price`` split into orders of <= MAX_LOT_PER_ORDER.
+
+        The exchange rejects an order above MAX_LOT_PER_ORDER lots, so e.g.
+        120000 goes out as 50000 + 50000 + 20000. Buys call buy(); sells go
+        through place_sell (portfolio check / top-up / retry) per chunk.
+        A chunk that fails with an ApiError is retried up to CHUNK_RETRIES times
+        (CHUNK_RETRY_DELAY_SECONDS apart). If it still fails, the ApiError
+        propagates with ``exc.chunks_done`` set to the chunks already placed.
+        Returns one ``{"lot", "response"}`` per chunk.
+        """
+        chunks = [config.MAX_LOT_PER_ORDER] * (lot // config.MAX_LOT_PER_ORDER)
+        if lot % config.MAX_LOT_PER_ORDER:
+            chunks.append(lot % config.MAX_LOT_PER_ORDER)
+
+        placed: list = []
+        for i, chunk in enumerate(chunks, 1):
+            for attempt in range(config.CHUNK_RETRIES + 1):
+                try:
+                    if side == "buy":
+                        response = self.buy(code, lot=chunk, price=price)
+                    else:
+                        response = self.place_sell(code, chunk, price)
+                    break
+                except ApiError as exc:
+                    if attempt == config.CHUNK_RETRIES:
+                        exc.chunks_done = placed
+                        raise
+                    print(
+                        f"{code}: {side} chunk {i}/{len(chunks)} failed ({exc}); "
+                        f"retry {attempt + 1}/{config.CHUNK_RETRIES}"
+                    )
+                    if config.CHUNK_RETRY_DELAY_SECONDS > 0:
+                        time.sleep(config.CHUNK_RETRY_DELAY_SECONDS)
+            placed.append({"lot": chunk, "response": response})
+            if len(chunks) > 1:
+                print(f"{code}: {side} chunk {i}/{len(chunks)}: {chunk} lot @ {price}")
+        return placed
+
     # -- orders -------------------------------------------------------------
     def get_all_orders(
         self,
