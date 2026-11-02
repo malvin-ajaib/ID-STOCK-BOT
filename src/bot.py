@@ -393,7 +393,6 @@ class StockBot:
         *,
         poll_interval: float = 1.0,
         max_attempts: int = 100,
-        max_ticks: int | None = None,
         counter_bot: "StockBot | None" = None,
     ) -> dict:
         """Walk the price toward ``target_price``, consuming the book level by level.
@@ -407,20 +406,18 @@ class StockBot:
           max-tick rule. This repeats, walking tick by tick, until the touch
           reaches the target.
         * **Empty side** — with nothing to trade into, a move has to be
-          manufactured: step the price toward the target by at most ``max_ticks``
-          (default config.UNTIL_MAX_TICKS, the exchange's limit from the current
-          price), place a COUNTER order on ``counter_bot`` (the opposite account)
-          at that step price — a resting ask for a buy, a resting bid for a sell
-          — then trade into it so the price actually moves there.
+          manufactured: step ONE tick toward the target, place a COUNTER order
+          on ``counter_bot`` (the opposite account) at that tick — a resting ask
+          for a buy, a resting bid for a sell — then trade into it so the price
+          prints there. One tick per order also keeps every order well inside
+          the exchange's max-tick rule.
 
         Stops when the reference reaches the target or after ``max_attempts``
         orders. ``lot`` defaults to the volume at the best level each iteration
         (config.FALLBACK_LOT on an empty side); pass a number to fix it.
         """
-        if max_ticks is None:
-            max_ticks = config.UNTIL_MAX_TICKS
         is_buy = side == "buy"
-        step_sign = max_ticks if is_buy else -max_ticks
+        step = 1 if is_buy else -1
 
         attempts: list = []
         reached = False
@@ -433,8 +430,13 @@ class StockBot:
                 reached = True
                 break
 
+            # order_lot is what trades through (the level / counter volume); our
+            # order adds RESIDUAL on top, which stays resting at the new price so
+            # the book behind the moving price is never left empty.
+            residual = config.UNTIL_RESIDUAL_LOT
             order_lot = lot if lot is not None else _auto_lot(orderbook, side)
-            order_lot = min(order_lot, config.MAX_LOT_PER_ORDER)
+            order_lot = max(1, min(order_lot, config.MAX_LOT_PER_ORDER - residual))
+            send_lot = order_lot + residual
 
             if _can_trade_into(orderbook, side, reference):
                 # A touch level exists — order AT it (best bid/ask) to consume it
@@ -442,9 +444,20 @@ class StockBot:
                 step_price = _clamp_price(reference, arb, ara)
                 seeded = False
             else:
-                # Empty side — step up to max_ticks toward the target and seed a
+                # Empty side — step one tick toward the target and seed a
                 # counter order on the opposite account so the trade can print.
-                step_price = add_ticks(reference, step_sign)
+                # Step from beyond our own side's touch too (sell: below the best
+                # ask, buy: above the best bid), else the counter order would
+                # cross those resting orders instead of sitting at the step price.
+                last_price = reference
+                try:
+                    if is_buy:
+                        reference = max(reference, _best_bid_price(orderbook))
+                    else:
+                        reference = min(reference, _best_ask_price(orderbook))
+                except RuntimeError:
+                    pass  # our side is empty too — the last price is the anchor
+                step_price = add_ticks(reference, step)
                 step_price = min(step_price, target) if is_buy else max(step_price, target)
                 step_price = _clamp_price(step_price, arb, ara)
                 seeded = counter_bot is not None
@@ -455,26 +468,34 @@ class StockBot:
                         counter_bot.buy(code, lot=order_lot, price=step_price)  # resting bid
 
             if is_buy:
-                response = self.buy(code, lot=order_lot, price=step_price)
+                response = self.buy(code, lot=send_lot, price=step_price)
             else:
-                response = self.place_sell(code, order_lot, step_price)
+                response = self.place_sell(code, send_lot, step_price)
 
             attempts.append({
                 "reference": reference,
                 "step_price": step_price,
-                "lot": order_lot,
+                "lot": send_lot,
+                "residual_lot": residual,
                 "seeded_counter": seeded,
                 "response": response,
             })
             touch_label, cmp, verb = (
                 ("best ask", "<", "buy") if is_buy else ("best bid", ">", "sell")
             )
-            # On an empty side the reference is the last/detail price, not a quote.
-            ref_label = "last" if seeded else touch_label
+            # On an empty side the reference is the last/detail price, or our own
+            # side's touch when that sits beyond it (e.g. best ask below last).
+            if not seeded:
+                ref_label = touch_label
+            elif reference == last_price:
+                ref_label = "last"
+            else:
+                ref_label = "best bid" if is_buy else "best ask"
             note = " (seeded counter)" if seeded else ""
             print(
                 f"{code}: {ref_label} {reference} {cmp} target {target} -> {verb} "
-                f"{order_lot} lot @ {step_price}{note} (attempt {len(attempts)})"
+                f"{send_lot} lot @ {step_price}{note}, leaves {residual} "
+                f"(attempt {len(attempts)})"
             )
             time.sleep(poll_interval)
         else:
@@ -498,10 +519,9 @@ class StockBot:
         *,
         poll_interval: float = 1.0,
         max_attempts: int = 100,
-        max_ticks: int | None = None,
         counter_bot: "StockBot | None" = None,
     ) -> dict:
-        """Lift the best ask to ``target_price``, stepping at most max_ticks/order.
+        """Lift the best ask to ``target_price``, walking it up tick by tick.
 
         Thin wrapper over _until(side="buy"). See _until for the stepping and
         counter-order behavior. ``counter_bot`` should be the SELL account so a
@@ -510,7 +530,7 @@ class StockBot:
         return self._until(
             code, target_price, "buy", lot,
             poll_interval=poll_interval, max_attempts=max_attempts,
-            max_ticks=max_ticks, counter_bot=counter_bot,
+            counter_bot=counter_bot,
         )
 
     def sell_ticks_below_bid(self, code: str, lot: int, ticks: int = 5) -> dict:
@@ -539,10 +559,9 @@ class StockBot:
         *,
         poll_interval: float = 1.0,
         max_attempts: int = 100,
-        max_ticks: int | None = None,
         counter_bot: "StockBot | None" = None,
     ) -> dict:
-        """Push the best bid down to ``target_price``, stepping at most max_ticks/order.
+        """Push the best bid down to ``target_price``, walking it down tick by tick.
 
         Thin wrapper over _until(side="sell"). See _until for the stepping and
         counter-order behavior. ``counter_bot`` should be the BUY account so a
@@ -551,7 +570,7 @@ class StockBot:
         return self._until(
             code, target_price, "sell", lot,
             poll_interval=poll_interval, max_attempts=max_attempts,
-            max_ticks=max_ticks, counter_bot=counter_bot,
+            counter_bot=counter_bot,
         )
 
     def fill_orderbook(

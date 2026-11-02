@@ -103,8 +103,8 @@ def run_until(
       target < current -> SELL-until (push the bid down to target; account 2,
                                        counter bids seeded from account 1)
 
-    The loop steps the price in <=UNTIL_MAX_TICKS-tick orders and seeds a counter
-    order on the other account when the side it must trade into is empty.
+    The loop walks the price one tick per order and seeds a counter order on the
+    other account when the side it must trade into is empty.
     """
     # Probe the current price on account 1 (price detail is read-only).
     probe = StockBot(account=config.ACCOUNT_BUY)
@@ -140,7 +140,7 @@ def run_until(
 
     print(
         f"{code}: current {current} -> target {target}: {side.upper()}-until "
-        f"(steps of <={config.UNTIL_MAX_TICKS} ticks, counter orders as needed).\n"
+        f"(tick by tick, counter orders as needed).\n"
     )
     until_fn = bot.buy_until_price if side == "buy" else bot.sell_until_price
     try:

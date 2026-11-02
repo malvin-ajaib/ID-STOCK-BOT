@@ -176,11 +176,18 @@ toward the target **level by level**:
   best bid is 1025 — not an order jumped away from the market.
 - **Empty side — step + counter order.** A sell can only push the price down if
   there are bids to trade into (a buy, asks to trade through). When that side is
-  empty, there's nothing to consume, so `--until` steps toward the target by at most
-  `AJAIB_UNTIL_MAX_TICKS` (default **10**) ticks — the exchange's limit from the
-  current price — places a **counter order on the other account** (a resting bid for
-  a sell, ask for a buy) at that step price, then trades into it so a trade prints
-  and the price moves there. This uses **both accounts**: sell-until trades on
+  empty, there's nothing to consume, so `--until` steps **one tick** toward the
+  target (e.g. 4080 → 4070) — from the lower of last price / best ask when selling
+  (higher of last / best bid when buying), so with asks resting at 4040 it steps to
+  4030 and the counter order never crosses them — places a **counter order on the other account** (a
+  resting bid for a sell, ask for a buy) at that tick, then trades into it so a
+  trade prints and the price moves there — then repeats from the new price. One
+  tick per order also keeps every order inside the exchange's max-tick rule.
+- **Leaves the book filled.** Every move order is the volume it trades through
+  **plus `AJAIB_UNTIL_RESIDUAL_LOT` (default 100) lots**. The extra lots don't
+  match, so they stay resting at the price just reached — selling down leaves a
+  100-lot ask at each tick walked (4070, 4060, …), buying up leaves bids — and the
+  book behind the moving price is never empty. Log: `sell 1100 lot @ 4070 …, leaves 100`. This uses **both accounts**: sell-until trades on
   account 2 and seeds bids from account 1; buy-until trades on account 1 and seeds
   asks from account 2.
 
